@@ -1,0 +1,47 @@
+2026-06-20 - 重构为全主循环架构
+
+日期: 2026-06-20
+
+涉及文件:
+  - bsp/track.h — 新增 flag_1ms/flag_5ms 声明 + 4个调度函数 + Track_SpeedLoop 声明
+  - bsp/track.c — 新增 flag变量 + 4个调度函数 + Track_SpeedLoop, 简化TIM11 ISR, 删除TIM7 ISR/Init
+  - app/main.c   — 主循环精简为5行函数调用
+
+修改前架构:
+  TIM11 ISR (1kHz, 最高优先级): 灰度转换+陀螺仪+直角检测+PID+动作执行 → 逻辑重, ISR耗时大
+  TIM7  ISR (200Hz):          编码器+速度PI+PWM输出
+  主循环:                      灰度采集+陀螺仪轮询+串口打印
+
+修改后架构:
+  TIM11 ISR (1kHz):           仅 system_time_ms++ + flag_1ms/flag_5ms + Track_Gyro_PollTick
+  主循环:                     所有控制逻辑通过4个调度函数执行
+
+新架构函数一览:
+
+  Track_Main_1ms()   — 消费flag_1ms: 灰度转换→陀螺仪更新→全局锁→直角检测→误差→PID→动作
+  Track_Main_5ms()   — 消费flag_5ms: 调用Track_SpeedLoop()
+  Track_Main_Gyro()  — 消费gyro_poll_request: bno080_update()
+  Track_Main_Debug() — 200ms串口打印(从main.c移入track.c)
+  Track_SpeedLoop()  — 编码器读取→RPM计算→速度PI→PWM输出(原TIM7 ISR逻辑)
+
+保留在硬件:
+  - TIM2/TIM4 编码器模式硬件计数器 (Encoder_ReadAll从主循环读取, 计数器自动累加)
+  - BNO080 I2C (bno080_update在主循环调用)
+
+主循环:
+  while (1) {
+      Grayscale_Task(&gray_sensor);
+      Track_Main_1ms();
+      Track_Main_5ms();
+      Track_Main_Gyro();
+      Track_Main_Debug();
+  }
+
+删除:
+  - TIM7_IRQHandler ISR
+  - Track_TIM7_Init() 函数
+
+注意事项:
+  - 主循环耗时约1-2ms (含I2C), flag_1ms=1kHz不会丢
+  - 速度环定时精度由ISR保证(flag_5ms), 执行时间有主循环抖动但可接受
+  - 如果主循环偶尔被I2C阻塞超过5ms, flag_5ms不会累加(简单布尔标志), 会丢一帧速度环

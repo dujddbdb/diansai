@@ -1,0 +1,47 @@
+# Build output
+**/Objects/
+**/Listings/
+*.o
+*.d
+*.crf
+*.lst
+*.map
+*.axf
+*.elf
+*.hex
+*.bin
+*.dep
+*.lnp
+*.bak
+*.exe
+
+# Build logs
+*.log
+build_log.txt
+
+# Keil local UI/user state
+*.uvguix.*
+JLinkLog.txt
+JLinkSettings.ini
+DebugConfig/
+
+# Local toolchains and virtual environments
+.venv/
+**/tools/python_venv/
+**/tools/arm-gcc/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor/assistant local state
+.vscode/
+.idea/
+.trae/
+
+# Backup of nested Git metadata, kept only for local recovery
+**/.git-before-root-repo/
+
+# OS files
+.DS_Store
+Thumbs.db

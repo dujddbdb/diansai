@@ -1,0 +1,15 @@
+# 开发工具 (便携环境，过大且系统相关)
+tools/
+
+# Keil MDK 用户配置
+*.uvguix.*
+
+# 编译产物
+project/MDK(V5)/Listings/
+project/MDK(V5)/Objects/*.o
+project/MDK(V5)/Objects/*.d
+project/MDK(V5)/Objects/*.crf
+
+# Python
+__pycache__/
+*.pyc
