@@ -56,7 +56,6 @@ void    bsp_i2c_clear_data_ready_flag(void);
 // BNO080完整初始化,返回1-成功 0-失败
 uint8_t bno080_init(void);
 // 轻量恢复旋转向量报告,返回1-成功 0-失败
-uint8_t bno080_restart_reports(void);
 // 主循环更新(非阻塞),返回1-有新数据 0-无数据
 uint8_t bno080_update(void);
 // 检查新数据可用(消费型),返回1-有新数据 0-无

@@ -18,7 +18,6 @@
 // I2C数据就绪标志: INTN中断已触发
 static volatile uint8_t g_i2c_data_ready = 0;
 // I2C忙标志: 正在读包中, 防止重入
-static volatile uint8_t g_bno080_i2c_busy = 0;
 // EXTI5中断触发次数统计(调试用)
 volatile uint32_t g_exti5_count = 0;
 // SHTP各通道发送序号
@@ -29,7 +28,6 @@ static uint8_t g_bno080_addr = 0x00;
 // 内部函数前向声明
 static void I2C1_Init(void);
 static void EXTI5_Init(void);
-static void BNO080_EXTI_SetEnabled(uint8_t en);
 static uint8_t I2C1_WaitWhileBusy(void);
 static uint8_t I2C1_WaitEvent(uint32_t event);
 static uint8_t I2C1_Write_NBytes(const uint8_t *pdata, uint16_t size);
@@ -111,48 +109,13 @@ static void EXTI5_Init(void)
     }
 }
 
-// 使能/关闭EXTI5中断: 读包期间关闭防重入
-static void BNO080_EXTI_SetEnabled(uint8_t en)
-{
-    if (en) {
-        EXTI->IMR |= EXTI_Line5;
-    } else {
-        EXTI->IMR &= ~EXTI_Line5;
-    }
-}
-
-// 定时器中断锁(已禁用, 保留代码)
-#if 0
-static int8_t g_timer_irq_lock_cnt = 0;
-static void BNO080_TimerIrq_Lock(void)
-{
-    if (g_timer_irq_lock_cnt == 0) {
-        TIM_ITConfig(TIM11, TIM_IT_Update, DISABLE);
-        TIM_ITConfig(TIM7,  TIM_IT_Update, DISABLE);
-    }
-    g_timer_irq_lock_cnt++;
-}
-static void BNO080_TimerIrq_Unlock(void)
-{
-    if (g_timer_irq_lock_cnt > 0) {
-        g_timer_irq_lock_cnt--;
-        if (g_timer_irq_lock_cnt == 0) {
-            TIM_ITConfig(TIM11, TIM_IT_Update, ENABLE);
-            TIM_ITConfig(TIM7,  TIM_IT_Update, ENABLE);
-        }
-    }
-}
-#endif
-
 // EXTI9_5中断: INTN下降沿→置位数据就绪标志
 void EXTI9_5_IRQHandler(void)
 {
     if (EXTI_GetITStatus(EXTI_Line5) != RESET) {
         EXTI_ClearITPendingBit(EXTI_Line5);
         g_exti5_count++;
-        if (!g_bno080_i2c_busy) {
-            g_i2c_data_ready = 1;
-        }
+        g_i2c_data_ready = 1;
     }
 }
 
@@ -619,7 +582,6 @@ static uint8_t bno080_handle_packet(const SHTP_Packet_TypeDef *packet) {
     if ((packet->channel_number == CHANNEL_EXECUTABLE) &&
         (packet->data_length >= 1U) &&
         (packet->data[0] == BNO080_EXECUTABLE_RESET_COMPLETE)) {
-        g_bno080.feature_enabled = 0U;
         g_bno080.new_data = 0U;
         return 1U;
     }
@@ -677,36 +639,6 @@ uint8_t bno080_init(void)
     return 1;
 }
 
-// 恢复旋转向量报告流(不执行软复位, 快速恢复)
-uint8_t bno080_restart_reports(void)
-{
-    SHTP_Packet_TypeDef packet;
-    uint8_t i;
-
-    if (!bsp_i2c_device_detect()) {
-        g_bno080.feature_enabled = 0;
-        return 0;
-    }
-
-    if (!bno080_set_feature_command(SENSOR_REPORTID_GAME_ROTATION_VECTOR,
-                                    BNO080_REPORT_INTERVAL_MS)) {
-        g_bno080.feature_enabled = 0;
-        return 0;
-    }
-
-    g_bno080.feature_enabled = 1;
-    g_bno080.new_data = 0;
-
-    for (i = 0; i < 3U; i++) {
-        if (bno080_wait_for_packet(20U, &packet)) {
-            (void)bno080_handle_packet(&packet);
-            if (g_bno080.new_data) break;
-        }
-    }
-
-    return 1;
-}
-
 // 主循环更新(非阻塞): 检测INTN→读包→分发
 uint8_t bno080_update(void) {
     SHTP_Packet_TypeDef packet;
@@ -714,18 +646,11 @@ uint8_t bno080_update(void) {
 
     if (!g_bno080.feature_enabled) return 0;
     if (!bsp_i2c_get_data_ready_flag()) return 0;
-    if (g_bno080_i2c_busy) return 0;
-
-    g_bno080_i2c_busy = 1;
-    BNO080_EXTI_SetEnabled(0);
 
     bsp_i2c_clear_data_ready_flag();
     if (bsp_i2c_receive_packet(&packet)) {
         result = bno080_handle_packet(&packet);
     }
-
-    BNO080_EXTI_SetEnabled(1);
-    g_bno080_i2c_busy = 0;
 
     return result;
 }

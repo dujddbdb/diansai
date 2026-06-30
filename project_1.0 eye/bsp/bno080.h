@@ -82,8 +82,6 @@ uint8_t bno080_init(void);
 uint8_t bno080_update(void);
 
 // 运行中重新下发SET_FEATURE恢复旋转向量报告 (数据流中断后恢复)
-uint8_t bno080_restart_reports(void);
-
 // 检查是否有新的传感器数据 (消费型: 读取后自动清除), 返回1=有新数据 0=无
 uint8_t bno080_data_available(void);
 

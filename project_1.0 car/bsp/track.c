@@ -302,8 +302,6 @@ void Track_Gyro_Update(void)
             // 后续帧：计算yaw角速率和角加速度
             float new_yaw = (GYRO_YAW_DIRECTION >= 0) ? yaw : -yaw;
             float yaw_rate_now = Track_Angle_Delta_Deg(new_yaw, gyro_yaw_deg);
-            // 跳变保护：相邻帧yaw变化超过20度视为异常，速率置零
-            if (fabsf(yaw_rate_now) > 20.0f) yaw_rate_now = 0.0f;
             gyro_yaw_accel = yaw_rate_now - gyro_yaw_rate;
             gyro_yaw_rate  = yaw_rate_now;
 

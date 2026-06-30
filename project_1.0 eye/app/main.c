@@ -80,7 +80,7 @@ int main(void)
     while (1) {
         uint32_t now_ms = HAL_GetTick();
         (void)imu_ready;
-        if ((uint32_t)(now_ms - last_vision_ms) < 10U) {
+        if ((uint32_t)(now_ms - last_vision_ms) < 5U) {
             continue;
         }
         last_vision_ms = now_ms;
