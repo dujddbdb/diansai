@@ -19,14 +19,12 @@
 #define I2C_TRANSFER_TIMEOUT_MS       5U
 
 static volatile uint8_t g_i2c_data_ready = 0;
-static volatile uint8_t g_bno080_i2c_busy = 0;
 volatile uint32_t g_exti5_count = 0;
 static uint8_t g_sequence[6] = {0, 0, 0, 0, 0, 0};
 static uint8_t g_bno080_addr = 0x00;
 
 static void I2C1_Init(void);
 static void EXTI5_Init(void);
-static void BNO080_EXTI_SetEnabled(uint8_t en);
 static uint8_t I2C1_WaitWhileBusy(void);
 static uint8_t I2C1_WaitEvent(uint32_t event);
 static uint8_t I2C1_Write_NBytes(const uint8_t *pdata, uint16_t size);
@@ -67,7 +65,7 @@ static void I2C1_Init(void)
     I2C_InitStructure.I2C_OwnAddress1 = 0x00;
     I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
     I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-    I2C_InitStructure.I2C_ClockSpeed = 350000;
+    I2C_InitStructure.I2C_ClockSpeed = 400000;
     I2C_Init(I2C1, &I2C_InitStructure);
     I2C_Cmd(I2C1, ENABLE);
 }
@@ -105,15 +103,6 @@ static void EXTI5_Init(void)
     // 上电时若INTN已为低则立即置位数据就绪
     if (GPIO_ReadInputDataBit(BNO080_INTN_PORT, BNO080_INTN_PIN) == Bit_RESET) {
         g_i2c_data_ready = 1;
-    }
-}
-
-static void BNO080_EXTI_SetEnabled(uint8_t en)
-{
-    if (en) {
-        EXTI->IMR |= EXTI_Line5;
-    } else {
-        EXTI->IMR &= (uint32_t)~EXTI_Line5;
     }
 }
 
@@ -373,7 +362,7 @@ uint8_t bsp_i2c_device_detect(void)
         I2C_InitStructure.I2C_OwnAddress1 = 0x00;
         I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
         I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-        I2C_InitStructure.I2C_ClockSpeed = 350000;
+        I2C_InitStructure.I2C_ClockSpeed = 400000;
         I2C_Init(I2C1, &I2C_InitStructure);
         I2C_Cmd(I2C1, ENABLE);
     }
@@ -584,7 +573,6 @@ static uint8_t bno080_handle_packet(const SHTP_Packet_TypeDef *packet)
     if ((packet->channel_number == CHANNEL_EXECUTABLE) &&
         (packet->data_length >= 1U) &&
         (packet->data[0] == BNO080_EXECUTABLE_RESET_COMPLETE)) {
-        g_bno080.feature_enabled = 0U;
         g_bno080.new_data = 0U;
         return 1U;
     }
@@ -669,47 +657,11 @@ uint8_t bno080_update(void)
     uint8_t result = 0;
     if (!g_bno080.feature_enabled) return 0;
     if (!bsp_i2c_get_data_ready_flag()) return 0;
-    if (g_bno080_i2c_busy) return 0;
-
-    g_bno080_i2c_busy = 1;
-    BNO080_EXTI_SetEnabled(0);
     bsp_i2c_clear_data_ready_flag();
     if (bsp_i2c_receive_packet(&packet)) {
         result = bno080_handle_packet(&packet);
     }
-    BNO080_EXTI_SetEnabled(1);
-    g_bno080_i2c_busy = 0;
     return result;
-}
-
-// 运行中重新使能旋转向量报告 (数据流中断后恢复)
-uint8_t bno080_restart_reports(void)
-{
-    SHTP_Packet_TypeDef packet;
-    uint8_t i;
-
-    if (!bsp_i2c_device_detect()) {
-        g_bno080.feature_enabled = 0;
-        return 0;
-    }
-
-    if (!bno080_set_feature_command(SENSOR_REPORTID_GAME_ROTATION_VECTOR,
-                                    BNO080_REPORT_INTERVAL_MS)) {
-        g_bno080.feature_enabled = 0;
-        return 0;
-    }
-
-    g_bno080.feature_enabled = 1;
-    g_bno080.new_data = 0;
-
-    for (i = 0; i < 3U; i++) {
-        if (bno080_wait_for_packet(20U, &packet)) {
-            (void)bno080_handle_packet(&packet);
-            if (g_bno080.new_data) break;
-        }
-    }
-
-    return 1;
 }
 
 // 消费型接口: 检查新数据可用性 (读取后自动清零)

@@ -21,6 +21,13 @@ static GimbalAxisCommandQueue_t s_x_cmd_queue = {0};
 static GimbalAxisCommandQueue_t s_y_cmd_queue = {0};
 static uint8_t s_next_axis_to_send = 0U;
 
+static float Gimbal_ClampFloat(float value, float limit)
+{
+    if (value > limit) return limit;
+    if (value < -limit) return -limit;
+    return value;
+}
+
 static void Gimbal_QueueAxisCommand(GimbalAxisCommandQueue_t *queue,
                                     uint8_t dir,
                                     uint16_t rpm,
@@ -186,6 +193,7 @@ void GimbalPID_Init(GimbalPID_t *pid, float output_max, uint8_t motor_addr) {
     pid->error = 0.0f;
     pid->last_error = 0.0f;
     pid->integral = 0.0f;
+    pid->derivative_filtered = 0.0f;
     pid->output = 0.0f;
     pid->last_output = 0.0f;
 
@@ -205,13 +213,18 @@ void GimbalDualPID_Init(GimbalDualPID_t *dual_pid) {
 
     dual_pid->yaw_delta = 0.0f;
     dual_pid->pitch_delta = 0.0f;
+    dual_pid->yaw_rate = 0.0f;
+    dual_pid->pitch_rate = 0.0f;
+    dual_pid->imu_dt_s = 0.0f;
     dual_pid->compensation_factor = GIMBAL_COMPENSATION_FACTOR;
+    dual_pid->rate_feedforward_factor = GIMBAL_RATE_FEEDFORWARD_FACTOR;
     dual_pid->compensation_enabled = 0;
 }
 
 float GimbalPID_Calculate(GimbalPID_t *pid, float error_px) {
     float kp, ki, kd;
     float error_angle;
+    float derivative_raw;
     float p_term, i_term, d_term;
     float output_raw;
     float output_delta;
@@ -224,6 +237,7 @@ float GimbalPID_Calculate(GimbalPID_t *pid, float error_px) {
         pid->error = error_px;
         pid->last_error = 0.0f;
         pid->integral = 0.0f;
+        pid->derivative_filtered = 0.0f;
 
         pid->output = 0.0f;
         pid->last_output = 0.0f;
@@ -259,7 +273,10 @@ float GimbalPID_Calculate(GimbalPID_t *pid, float error_px) {
     // 单轴PID计算: P(比例) + I(积分) + D(微分)
     p_term = kp * error_angle;
     i_term = ki * pid->integral;
-    d_term = kd * (error_angle - pid->last_error * pid->pixel_to_angle);
+    derivative_raw = error_angle - pid->last_error * pid->pixel_to_angle;
+    pid->derivative_filtered +=
+        (derivative_raw - pid->derivative_filtered) * GIMBAL_DERIVATIVE_FILTER_ALPHA;
+    d_term = kd * pid->derivative_filtered;
 
     output_raw = p_term + i_term + d_term;
 
@@ -273,15 +290,16 @@ float GimbalPID_Calculate(GimbalPID_t *pid, float error_px) {
     // 输出平滑限速: 相邻两次输出的变化量不超过output_max，防止突变
     output_delta = output_raw - pid->last_output;
 
-    if (fabsf(output_delta) > pid->output_max) {
+    if (fabsf(output_delta) > GIMBAL_OUTPUT_SLEW_DEG) {
         if (output_delta > 0) {
-            output_smoothed = pid->last_output + pid->output_max;
+            output_smoothed = pid->last_output + GIMBAL_OUTPUT_SLEW_DEG;
         } else {
-            output_smoothed = pid->last_output - pid->output_max;
+            output_smoothed = pid->last_output - GIMBAL_OUTPUT_SLEW_DEG;
         }
     } else {
         output_smoothed = output_raw;
     }
+    output_smoothed = Gimbal_ClampFloat(output_smoothed, pid->output_max);
 
     pid->last_error = error_px;
     pid->last_output = output_smoothed;
@@ -305,23 +323,38 @@ void GimbalDualPID_Update(GimbalDualPID_t *dual_pid, float error_x_px, float err
     // IMU前馈补偿: 车身姿态变化反向补偿到云台输出
     // 补偿量 = -IMU角度变化 × 补偿系数，抵消车身晃动对瞄准的影响
     if (dual_pid->compensation_enabled) {
-        if (fabsf(dual_pid->yaw_delta) > GIMBAL_YAW_DELTA_THRESHOLD) {
-            yaw_compensation_angle = -dual_pid->yaw_delta * dual_pid->compensation_factor;
+        if (fabsf(dual_pid->yaw_delta) >= GIMBAL_YAW_DELTA_THRESHOLD) {
+            yaw_compensation_angle =
+                -(dual_pid->yaw_delta +
+                  dual_pid->yaw_rate * dual_pid->rate_feedforward_factor) *
+                dual_pid->compensation_factor;
+            yaw_compensation_angle =
+                Gimbal_ClampFloat(yaw_compensation_angle, GIMBAL_FEEDFORWARD_MAX_DEG);
             output_x += yaw_compensation_angle;
         }
 
-        if (fabsf(dual_pid->pitch_delta) > GIMBAL_PITCH_DELTA_THRESHOLD) {
-            pitch_compensation_angle = -dual_pid->pitch_delta * dual_pid->compensation_factor;
+        if (fabsf(dual_pid->pitch_delta) >= GIMBAL_PITCH_DELTA_THRESHOLD) {
+            pitch_compensation_angle =
+                -(dual_pid->pitch_delta +
+                  dual_pid->pitch_rate * dual_pid->rate_feedforward_factor) *
+                dual_pid->compensation_factor;
+            pitch_compensation_angle =
+                Gimbal_ClampFloat(pitch_compensation_angle, GIMBAL_FEEDFORWARD_MAX_DEG);
             output_y += pitch_compensation_angle;
         }
     }
 
-    (void)yaw_compensation_angle;
-    (void)pitch_compensation_angle;
+    output_x = Gimbal_ClampFloat(output_x, dual_pid->x_axis.output_max);
+    output_y = Gimbal_ClampFloat(output_y, dual_pid->y_axis.output_max);
+    dual_pid->x_axis.output = output_x;
+    dual_pid->y_axis.output = output_y;
 
     // 补偿数据单次使用，用后清零
     dual_pid->yaw_delta = 0.0f;
     dual_pid->pitch_delta = 0.0f;
+    dual_pid->yaw_rate = 0.0f;
+    dual_pid->pitch_rate = 0.0f;
+    dual_pid->imu_dt_s = 0.0f;
 
     // 角度→脉冲→方向: 负数反转方向
     if (output_x <= 0) {
@@ -355,6 +388,8 @@ void GimbalDualPID_Update(GimbalDualPID_t *dual_pid, float error_x_px, float err
 
     g_gimbal_debug.output_x_deg = output_x;
     g_gimbal_debug.output_y_deg = output_y;
+    g_gimbal_debug.yaw_feedforward_deg = yaw_compensation_angle;
+    g_gimbal_debug.pitch_feedforward_deg = pitch_compensation_angle;
     g_gimbal_debug.dir_x = dir_x;
     g_gimbal_debug.dir_y = dir_y;
     g_gimbal_debug.pulses_x = pulses_x;
@@ -364,6 +399,7 @@ void GimbalDualPID_Update(GimbalDualPID_t *dual_pid, float error_x_px, float err
 void GimbalPID_ClearIntegral(GimbalPID_t *pid) {
     pid->integral = 0.0f;
     pid->last_error = 0.0f;
+    pid->derivative_filtered = 0.0f;
 }
 
 void GimbalDualPID_ClearIntegral(GimbalDualPID_t *dual_pid) {
@@ -393,8 +429,25 @@ void GimbalDualPID_SetCompensation(GimbalDualPID_t *dual_pid, float factor, uint
 }
 
 void GimbalDualPID_SetIMUDelta(GimbalDualPID_t *dual_pid, float yaw_delta, float pitch_delta) {
+    GimbalDualPID_SetIMUFeedforward(dual_pid,
+                                    yaw_delta,
+                                    pitch_delta,
+                                    0.0f,
+                                    0.0f,
+                                    0.0f);
+}
+
+void GimbalDualPID_SetIMUFeedforward(GimbalDualPID_t *dual_pid,
+                                     float yaw_delta,
+                                     float pitch_delta,
+                                     float yaw_rate,
+                                     float pitch_rate,
+                                     float dt_s) {
     dual_pid->yaw_delta = yaw_delta;
     dual_pid->pitch_delta = pitch_delta;
+    dual_pid->yaw_rate = yaw_rate;
+    dual_pid->pitch_rate = pitch_rate;
+    dual_pid->imu_dt_s = dt_s;
 }
 
 const GimbalDebugState_t* GimbalDualPID_GetDebugState(void)

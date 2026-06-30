@@ -18,8 +18,8 @@
 #define K230_RX_BUF_SIZE    8U       // 接收缓冲区大小
 #define K230_IRQ_PRIO       2U       // 串口中断优先级
 
-#define K230_TRACK_RAW_LEN  4U       // 单帧原始数据长度(字节)
-#define K230_TRACK_INVALID  0x7FFF   // 无效追踪标记值
+#define K230_TRACK_RAW_LEN 4U        // 单帧原始数据长度(字节)
+#define K230_TRACK_INVALID 0x7FFF    // 无效追踪标记值
 
 typedef struct {
     int16_t err_y;          // Y轴误差(像素)

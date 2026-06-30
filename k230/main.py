@@ -47,14 +47,13 @@ def perspective_map_point(corners, u, v):
     return ((a * u + b * v + x0) / denominator,
             (d * u + e * v + y0) / denominator)
 
-def pack_error_packet(err_y, err_z, fps=0):
+ERR_INVALID = 0x7FFF
+
+def pack_error_packet(err_y, err_z):
     err_y &= 0xFFFF
     err_z &= 0xFFFF
-    payload = bytes((err_y >> 8, err_y & 0xFF,
-                     err_z >> 8, err_z & 0xFF,
-                     int(fps) & 0xFF))
-    checksum = (0x04 + len(payload) + sum(payload)) & 0xFF
-    return bytes((0xAA, 0x04, len(payload))) + payload + bytes((checksum,))
+    return bytes((err_y >> 8, err_y & 0xFF,
+                  err_z >> 8, err_z & 0xFF))
 
 try:
     import cv_lite
@@ -80,9 +79,9 @@ LASER_OFFSET_Y = -77
 
 # 显示模式
 HEADLESS = False
-SHOW_TO_IDE = True
+SHOW_TO_IDE = False
 SENSOR_PIXFORMAT = "GRAYSCALE"
-DISPLAY_EVERY_N = 2
+DISPLAY_EVERY_N = 3
 
 # cv_lite 矩形检测器参数
 CV_LOW = 20
@@ -136,6 +135,9 @@ ORIGIN_X = IMG_W // 2
 ORIGIN_Y = 160
 TARGET_PLANE_U = 0.500
 TARGET_PLANE_V = 0.500
+
+def control_error(cx, cy):
+    return int(cx) - ORIGIN_X, ORIGIN_Y - int(cy)
 
 
 # ============================================================
@@ -748,7 +750,7 @@ def draw_overlay(img, corners, target_x, target_y, fps, fresh, err_y, err_z):
 # UART3通信协议
 # ============================================================
 def send_tracking(uart, err_y, err_z, fps=0):
-    uart.write(pack_error_packet(int(err_y), int(err_z), fps))
+    uart.write(pack_error_packet(int(err_y), int(err_z)))
 
 
 def init_uart():
@@ -820,27 +822,27 @@ try:
         os.exitpoint()
         img = sensor.snapshot()
 
-        # ===== 以激光点为中心裁剪640x480检测画面 =====
+        # ===== 以激光点为中心裁剪检测画面 =====
         crop_roi = laser_center_roi()
-        if crop_roi == (0, 0, CAM_W, CAM_H):
-            crop_img = img
-        else:
-            crop_img = img.copy(roi=crop_roi)
+        view = img.copy(roi=crop_roi)
 
         if pixfmt == "GRAYSCALE":
-            gray = crop_img
+            gray = view
         else:
-            gray = crop_img.to_grayscale(copy=True)
+            gray = view.to_grayscale(copy=True)
 
         target_x, target_y, corners, fresh = tracker.detect(gray)
         stable_x, stable_y = tracker._stable_output(target_x, target_y, fresh)
-        target_valid = fresh and stable_x >= 0 and stable_y >= 0
+        target_valid = stable_x >= 0 and stable_y >= 0
         if target_valid:
-            send_y = stable_x - ORIGIN_X
-            send_z = ORIGIN_Y - stable_y
+            cx = stable_x
+            cy = stable_y
+            err_y, err_z = control_error(cx, cy)
+            send_y = err_y
+            send_z = err_z
         else:
-            send_y = 0
-            send_z = 0
+            send_y = ERR_INVALID
+            send_z = ERR_INVALID
         fps = int(clock.fps() + 0.5)
         send_tracking(uart, send_y, send_z, fps if target_valid else 0)
 
@@ -848,8 +850,8 @@ try:
             display_count += 1
             if display_count >= DISPLAY_EVERY_N:
                 display_count = 0
-                draw_overlay(crop_img, corners, target_x, target_y, fps, fresh, send_y, send_z)
-                Display.show_image(crop_img, x=(800 - IMG_W) // 2, y=(480 - IMG_H) // 2)
+                draw_overlay(view, corners, target_x, target_y, fps, fresh, send_y, send_z)
+                Display.show_image(view, x=(800 - IMG_W) // 2, y=(480 - IMG_H) // 2)
 
         gc_count += 1
         if gc_count >= 60:

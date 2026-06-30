@@ -30,6 +30,11 @@ typedef enum {
 // IMU角度一阶卡尔曼滤波器状态
 typedef struct {
     float angle;
+    float rate;
+    float p00;
+    float p01;
+    float p10;
+    float p11;
     float p;
     uint8_t valid;
 } Vision_AngleKalman_t;
@@ -84,6 +89,68 @@ static float Vision_AngleKalmanUpdate(Vision_AngleKalman_t *kf, float measuremen
     return kf->angle;
 }
 
+static void Vision_AngleKalmanStep(Vision_AngleKalman_t *kf,
+                                   float measurement_deg,
+                                   uint8_t has_measurement,
+                                   float dt_s)
+{
+    float p00;
+    float p01;
+    float p10;
+    float p11;
+    float innovation;
+    float s;
+    float k0;
+    float k1;
+
+    if (!kf->valid) {
+        if (!has_measurement) return;
+        kf->angle = measurement_deg;
+        kf->rate = 0.0f;
+        kf->p00 = 1.0f;
+        kf->p01 = 0.0f;
+        kf->p10 = 0.0f;
+        kf->p11 = 1.0f;
+        kf->p = 1.0f;
+        kf->valid = 1U;
+        return;
+    }
+
+    kf->angle += kf->rate * dt_s;
+
+    p00 = kf->p00 + dt_s * (kf->p10 + kf->p01) +
+          dt_s * dt_s * kf->p11 + VISION_IMU_KALMAN_Q;
+    p01 = kf->p01 + dt_s * kf->p11;
+    p10 = kf->p10 + dt_s * kf->p11;
+    p11 = kf->p11 + VISION_IMU_KALMAN_RATE_Q;
+
+    kf->p00 = p00;
+    kf->p01 = p01;
+    kf->p10 = p10;
+    kf->p11 = p11;
+
+    if (!has_measurement) return;
+
+    measurement_deg = kf->angle + Vision_WrapAngleDeltaDeg(measurement_deg, kf->angle);
+    innovation = Vision_WrapAngleDeltaDeg(measurement_deg, kf->angle);
+    s = kf->p00 + VISION_IMU_KALMAN_R;
+    if (s <= 1.0e-6f) return;
+
+    k0 = kf->p00 / s;
+    k1 = kf->p10 / s;
+    p00 = kf->p00;
+    p01 = kf->p01;
+
+    kf->angle += k0 * innovation;
+    kf->rate += k1 * innovation;
+
+    kf->p00 = (1.0f - k0) * p00;
+    kf->p01 = (1.0f - k0) * p01;
+    kf->p10 = kf->p10 - k1 * p00;
+    kf->p11 = kf->p11 - k1 * p01;
+    kf->p = kf->p00;
+}
+
 // 误差混合因子: 平滑过渡小误差→大误差区间的PID参数
 static float Vision_ErrorBlend(float abs_error_px)
 {
@@ -133,9 +200,13 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
     static uint8_t imu_valid = 0U;
     static float last_yaw_deg = 0.0f;
     static float last_pitch_deg = 0.0f;
+    static uint32_t last_kalman_ms = 0U;
     uint32_t now_ms = HAL_GetTick();
+    uint32_t dt_ms;
+    float dt_s;
     float corner_blend = UART5_CarCornerBlend(now_ms);
     uint8_t corner_active = (corner_blend >= VISION_IMU_MIN_CORNER_BLEND) ? 1U : 0U;
+    uint8_t has_measurement;
     float roll_deg = 0.0f;
     float pitch_deg = 0.0f;
     float yaw_deg = 0.0f;
@@ -146,15 +217,34 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
                                   GIMBAL_COMPENSATION_FACTOR * corner_blend,
                                   corner_active);
 
-    if (!bno080_update()) {
+    has_measurement = bno080_update();
+    if (!has_measurement && !s_yaw_kf.valid) {
         return 0U;
     }
 
-    bno080_get_euler(&roll_deg, &pitch_deg, &yaw_deg);
-    (void)roll_deg;
+    if (last_kalman_ms == 0U) {
+        dt_ms = 10U;
+    } else {
+        dt_ms = (uint32_t)(now_ms - last_kalman_ms);
+    }
+    last_kalman_ms = now_ms;
+    if (dt_ms < VISION_IMU_DT_MIN_MS) dt_ms = VISION_IMU_DT_MIN_MS;
+    if (dt_ms > VISION_IMU_DT_MAX_MS) dt_ms = VISION_IMU_DT_MAX_MS;
+    dt_s = (float)dt_ms * 0.001f;
 
-    filtered_yaw = Vision_AngleKalmanUpdate(&s_yaw_kf, yaw_deg);
-    filtered_pitch = Vision_AngleKalmanUpdate(&s_pitch_kf, pitch_deg);
+    if (has_measurement) {
+        bno080_get_euler(&roll_deg, &pitch_deg, &yaw_deg);
+        (void)roll_deg;
+    }
+
+    Vision_AngleKalmanStep(&s_yaw_kf, yaw_deg, has_measurement, dt_s);
+    Vision_AngleKalmanStep(&s_pitch_kf, pitch_deg, has_measurement, dt_s);
+    if (!s_yaw_kf.valid || !s_pitch_kf.valid) {
+        return 0U;
+    }
+
+    filtered_yaw = s_yaw_kf.angle;
+    filtered_pitch = s_pitch_kf.angle;
 
     if (imu_valid && corner_active) {
         float yaw_delta = Vision_WrapAngleDeltaDeg(filtered_yaw, last_yaw_deg);
@@ -167,7 +257,17 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
                                         -VISION_IMU_DELTA_LIMIT_DEG,
                                         VISION_IMU_DELTA_LIMIT_DEG);
 
-        GimbalDualPID_SetIMUDelta(&s_gimbal_pid, yaw_delta, pitch_delta);
+        if ((fabsf(s_yaw_kf.rate) < 0.001f) &&
+            (fabsf(s_pitch_kf.rate) < 0.001f)) {
+            GimbalDualPID_SetIMUDelta(&s_gimbal_pid, yaw_delta, pitch_delta);
+        } else {
+            GimbalDualPID_SetIMUFeedforward(&s_gimbal_pid,
+                                           yaw_delta,
+                                           pitch_delta,
+                                           s_yaw_kf.rate,
+                                           s_pitch_kf.rate,
+                                           dt_s);
+        }
 
         last_yaw_deg = filtered_yaw;
         last_pitch_deg = filtered_pitch;
