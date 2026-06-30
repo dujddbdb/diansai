@@ -40,12 +40,12 @@
 // 转弯过渡曲线参数
 #define CORNER_PID_SMOOTH_ALPHA           0.30f   // 转弯PID平滑滤波系数
 #define CORNER_PREVIEW_DECEL_RPM          16.0f   // 预览减速转速量(RPM)
-#define CORNER_ENTRY_BLEND_PROGRESS       0.30f   // IMU差速在前20%角度进度内平滑拉起
+#define CORNER_ENTRY_BLEND_PROGRESS       0.30f   // IMU差速在前30%角度进度内平滑拉起
 #define CORNER_SPEED_EXIT_START_PROGRESS  0.55f   // 出弯加速起始进度(0-1)
 #define CORNER_SPEED_EXIT_BLEND_WIDTH     0.45f   // 出弯加速过渡宽度
 #define CORNER_GYRO_DIFF_LIMIT_RPM        65.0f   // 转弯陀螺仪差速限幅(RPM)
 #define CORNER_DIFF_SLEW_UP_RPM_PER_MS    1.15f   // 转弯差速上升斜率(RPM/ms)
-#define CORNER_BASE_SLEW_DOWN_RPM_PER_MS  0.90f   // 转弯基础转速下降斜率(RPM/ms)
+#define CORNER_BASE_SLEW_DOWN_RPM_PER_MS  0.50f   // 转弯基础转速下降斜率(RPM/ms)
 #define CORNER_BASE_SLEW_UP_RPM_PER_MS    0.25f   // 转弯基础转速上升斜率(RPM/ms)
 #define WHEEL_COMMAND_SLEW_RPM_PER_MS     2.20f   // 轮指令斜率限制(RPM/ms)
 
@@ -54,7 +54,7 @@
 #define GYRO_STRAIGHT_DAMPING_ENABLE  1   // 0-关闭直道陀螺仪阻尼 1-开启
 #define KD_GYRO_STRAIGHT              5.5f   // 直道陀螺仪阻尼微分系数
 #define GYRO_STRAIGHT_LIMIT           15.0f  // 直道陀螺仪阻尼输出限幅(RPM)
-#define GYRO_MAIN_POLL_PERIOD_MS      10U    // 陀螺仪主轮询周期(ms)
+#define GYRO_MAIN_POLL_PERIOD_MS      1U    // 陀螺仪主轮询周期(ms)
 
 // 速度环PID参数
 #define KP_VELOCITY           20.233530f  // 速度环PID比例系数

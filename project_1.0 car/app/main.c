@@ -142,7 +142,7 @@ static void Car_OLEDShowTargetLap(void)
 
     last_display_lap = Track_Target_Laps;
     OLED_Clear();
-    OLED_ShowNum(58, 20, (u32)display_lap, 1, 24, 1);
+    OLED_ShowNum(0, 0, (u32)display_lap, 1, 8, 1);
     OLED_Refresh();
 }
 
@@ -300,20 +300,20 @@ int main(void)
          * @note   已注释掉，不输出调试信息
          * @note   需要调试时可取消注释
          */
-        Track_Main_Debug(100);
+//        Track_Main_Debug(100);
 
         /**
          * @brief  IMU有数据时点亮LED/关闭继电器，无数据时熄灭LED/吸合继电器
          */
-        if (gyro_yaw_available) 
-        {
-            ExtLED_On();
-            Relay_Off();
-        }
-        else
-        {
-            ExtLED_Off();
-            Relay_On();
-        }					
+//        if (gyro_yaw_available) 
+//        {
+//            ExtLED_On();
+//            Relay_Off();
+//        }
+//        else
+//        {
+//            ExtLED_Off();
+//            Relay_On();
+//        }					
     }
 }
