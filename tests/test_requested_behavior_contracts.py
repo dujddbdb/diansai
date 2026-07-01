@@ -55,14 +55,15 @@ class RequestedBehaviorContracts(unittest.TestCase):
         self.assertIn("CROP_Y = max(0, min(CAM_H - IMG_H, CROP_CENTER_Y - IMG_H // 2))", main_py)
         self.assertIn("CROP_ROI = (CROP_X, CROP_Y, IMG_W, IMG_H)", main_py)
         self.assertIn("def detection_center_roi", main_py)
-        self.assertIn("ORIGIN_X = CROP_CENTER_X - CROP_X", main_py)
-        self.assertIn("ORIGIN_Y = CROP_CENTER_Y - CROP_Y", main_py)
+        self.assertIn("ORIGIN_X = IMG_W // 2", main_py)
+        self.assertIn("ORIGIN_Y = IMG_H // 2", main_py)
         self.assertIn("return CROP_ROI", main_py)
         self.assertIn("center_penalty = (abs(cx - ORIGIN_X) +", main_py)
         self.assertIn("abs(cy - ORIGIN_Y)) * 0.01", main_py)
         self.assertIn("crop_roi = detection_center_roi()", main_py)
         self.assertNotIn("LASER_OFFSET_X", main_py)
         self.assertNotIn("LASER_OFFSET_Y", main_py)
+        self.assertNotIn("find_laser", main_py.lower())
         self.assertNotIn("crop_x = LASER_BIG_X - IMG_W // 2", main_py)
 
     def test_k230_has_simple_kalman_variant(self):
@@ -74,7 +75,8 @@ class RequestedBehaviorContracts(unittest.TestCase):
         self.assertIn("CAM_W = 1920", kalman_py)
         self.assertIn("CAM_H = 1080", kalman_py)
         self.assertIn("CROP_ROI = (CROP_X, CROP_Y, IMG_W, IMG_H)", kalman_py)
-        self.assertIn("ORIGIN_X = CROP_CENTER_X - CROP_X", kalman_py)
+        self.assertIn("ORIGIN_X = IMG_W // 2", kalman_py)
+        self.assertIn("ORIGIN_Y = IMG_H // 2", kalman_py)
         self.assertIn("return bytes((err_y >> 8, err_y & 0xFF,", kalman_py)
         self.assertIn("view = frame.copy(roi=detection_center_roi())", kalman_py)
 
