@@ -139,6 +139,109 @@ static uint32_t Gimbal_AngleToPulses(float angle_deg)
     return (uint32_t)(pulses + 0.5f);
 }
 
+static void GimbalDualPID_ClearIMUFeedforward(GimbalDualPID_t *dual_pid)
+{
+    dual_pid->yaw_delta = 0.0f;
+    dual_pid->pitch_delta = 0.0f;
+    dual_pid->yaw_rate = 0.0f;
+    dual_pid->pitch_rate = 0.0f;
+    dual_pid->imu_dt_s = 0.0f;
+}
+
+static void Gimbal_ClearCommandQueues(void)
+{
+    s_x_cmd_queue.pending_pulses = 0U;
+    s_y_cmd_queue.pending_pulses = 0U;
+}
+
+static void GimbalDualPID_CalcIMUFeedforward(GimbalDualPID_t *dual_pid,
+                                             float *yaw_compensation_angle,
+                                             float *pitch_compensation_angle)
+{
+    *yaw_compensation_angle = 0.0f;
+    *pitch_compensation_angle = 0.0f;
+
+    if (!dual_pid->compensation_enabled) {
+        return;
+    }
+
+    if (fabsf(dual_pid->yaw_delta) >= GIMBAL_YAW_DELTA_THRESHOLD) {
+        *yaw_compensation_angle =
+            -(dual_pid->yaw_delta +
+              dual_pid->yaw_rate * dual_pid->rate_feedforward_factor) *
+            dual_pid->compensation_factor;
+        *yaw_compensation_angle =
+            Gimbal_ClampFloat(*yaw_compensation_angle, GIMBAL_FEEDFORWARD_MAX_DEG);
+    }
+
+    if (fabsf(dual_pid->pitch_delta) >= GIMBAL_PITCH_DELTA_THRESHOLD) {
+        *pitch_compensation_angle =
+            -(dual_pid->pitch_delta +
+              dual_pid->pitch_rate * dual_pid->rate_feedforward_factor) *
+            dual_pid->compensation_factor;
+        *pitch_compensation_angle =
+            Gimbal_ClampFloat(*pitch_compensation_angle, GIMBAL_FEEDFORWARD_MAX_DEG);
+    }
+}
+
+static void GimbalDualPID_SendRelativeOutput(GimbalDualPID_t *dual_pid,
+                                             float output_x,
+                                             float output_y,
+                                             float yaw_compensation_angle,
+                                             float pitch_compensation_angle,
+                                             uint8_t store_axis_output)
+{
+    uint8_t dir_x;
+    uint8_t dir_y;
+    uint32_t pulses_x;
+    uint32_t pulses_y;
+
+    output_x = Gimbal_ClampFloat(output_x, dual_pid->x_axis.output_max);
+    output_y = Gimbal_ClampFloat(output_y, dual_pid->y_axis.output_max);
+
+    if (store_axis_output) {
+        dual_pid->x_axis.output = output_x;
+        dual_pid->y_axis.output = output_y;
+    }
+
+    if (output_x <= 0.0f) {
+        dir_x = 0U;
+        pulses_x = Gimbal_AngleToPulses(output_x);
+    } else {
+        dir_x = 1U;
+        pulses_x = Gimbal_AngleToPulses(output_x);
+    }
+
+    if (output_y >= 0.0f) {
+        dir_y = 0U;
+        pulses_y = Gimbal_AngleToPulses(output_y);
+    } else {
+        dir_y = 1U;
+        pulses_y = Gimbal_AngleToPulses(output_y);
+    }
+
+    Gimbal_QueueAxisCommand(&s_x_cmd_queue,
+                            dir_x,
+                            dual_pid->x_axis.rpm,
+                            dual_pid->x_axis.acc,
+                            pulses_x);
+    Gimbal_QueueAxisCommand(&s_y_cmd_queue,
+                            dir_y,
+                            dual_pid->y_axis.rpm,
+                            dual_pid->y_axis.acc,
+                            pulses_y);
+    Gimbal_FlushFineInterleaved(dual_pid);
+
+    g_gimbal_debug.output_x_deg = output_x;
+    g_gimbal_debug.output_y_deg = output_y;
+    g_gimbal_debug.yaw_feedforward_deg = yaw_compensation_angle;
+    g_gimbal_debug.pitch_feedforward_deg = pitch_compensation_angle;
+    g_gimbal_debug.dir_x = dir_x;
+    g_gimbal_debug.dir_y = dir_y;
+    g_gimbal_debug.pulses_x = pulses_x;
+    g_gimbal_debug.pulses_y = pulses_y;
+}
+
 static float GimbalPID_BlendFactor(float abs_error_px)
 {
     float t;
@@ -363,13 +466,14 @@ void GimbalDualPID_Update(GimbalDualPID_t *dual_pid, float error_x_px, float err
         pulses_x = Gimbal_AngleToPulses(output_x);
     }
 
-    if (output_y >= 0) {
-        dir_y = 0;
-        pulses_y = Gimbal_AngleToPulses(output_y);
-    } else {
-        dir_y = 1;
-        pulses_y = Gimbal_AngleToPulses(output_y);
-    }
+    GimbalDualPID_ClearIMUFeedforward(dual_pid);
+    GimbalDualPID_SendRelativeOutput(dual_pid,
+                                     output_x,
+                                     output_y,
+                                     yaw_compensation_angle,
+                                     pitch_compensation_angle,
+                                     1U);
+}
 
     /* 双轴交错输出 */
     Gimbal_QueueAxisCommand(&s_x_cmd_queue,

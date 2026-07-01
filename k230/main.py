@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-K230 靶心识别 + LCD显示 + UART3发送 (放大画面版)
-==============================================
-修改点:
-1. 检测分辨率从 320x240 放大到 640x480，LCD显示画面大一倍
-2. 裁剪中心对准原ORIGIN_Y=55对应的激光物理位置，激光点落在裁剪画面正中心
-3. 同步放大面积阈值、ROI追踪边距等像素参数，保证检测逻辑正常
+K230 target detection + LCD preview + UART3 raw tracking output.
+
+The sensor captures 1920x1080 frames. Detection runs on a 320x240
+crop centered on the calibrated full-frame laser/origin point.
 """
 
 import gc
@@ -78,19 +76,23 @@ except ImportError:
 
 
 # ============================================================
-# 用户可调参数区 (已放大适配640x480)
+# 用户可调参数区
 # ============================================================
 # 图像与通信
-IMG_W = 300
-IMG_H = 300
+IMG_W = 320
+IMG_H = 240
 CAM_W = 1920
 CAM_H = 1080
 CAM_FPS = 60
 UART_BAUD = 115200
 
-# 激光点在1080P大图中的物理坐标 (由原320x240中心裁剪时ORIGIN_Y=55换算得到)
-LASER_OFFSET_X = 0
-LASER_OFFSET_Y = -77
+# Manual calibration: adjust this full-frame crop center until the real
+# laser point appears at the center of the 320x240 detection image.
+CROP_CENTER_X = CAM_W // 2
+CROP_CENTER_Y = CAM_H // 2 - 77
+CROP_X = max(0, min(CAM_W - IMG_W, CROP_CENTER_X - IMG_W // 2))
+CROP_Y = max(0, min(CAM_H - IMG_H, CROP_CENTER_Y - IMG_H // 2))
+CROP_ROI = (CROP_X, CROP_Y, IMG_W, IMG_H)
 
 # 显示模式
 HEADLESS = False
@@ -109,7 +111,7 @@ CV_MIN_EDGE = 6
 # find_rects 回退方案
 FIND_RECTS_THRESHOLD = 4500
 
-# A4黑框靶标尺寸约束 (640x480分辨率，面积×4)
+# A4黑框靶标尺寸约束 (320x240检测裁剪)
 OUTER_MIN_AREA = 900
 OUTER_MAX_AREA = 70000
 RECT_MIN_ANGLE = 48
@@ -118,7 +120,7 @@ ASPECT_MAX = 1.75
 BLACK_GRAY_TH = 95
 WHITE_GRAY_TH = 135
 
-# ROI追踪 (分辨率翻倍，边距×2)
+# ROI追踪 (320x240检测裁剪)
 TRACK_MARGIN = 56
 TRACK_MARGIN_MAX = 160
 TRACK_MARGIN_VEL_GAIN = 2
@@ -146,8 +148,10 @@ OUTPUT_SMOOTH_DEN = 5
 OUTPUT_HOLD_FRAMES = 2
 
 # 原点校准 (裁剪后激光点在画面正中心)
+# The calibrated laser point is the crop image center. Do not run laser
+# detection here; moving CROP_CENTER_X/Y is the calibration.
 ORIGIN_X = IMG_W // 2
-ORIGIN_Y = 160
+ORIGIN_Y = IMG_H // 2
 TARGET_PLANE_U = 0.500
 TARGET_PLANE_V = 0.500
 

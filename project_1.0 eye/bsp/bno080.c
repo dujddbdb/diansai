@@ -450,7 +450,7 @@ uint8_t bsp_i2c_device_detect(void)
 #define BNO080_ROTATION_VECTOR_Q1    14
 #define BNO080_ROTATION_ACCURACY_Q1  12
 
-#define BNO080_REPORT_INTERVAL_MS    20U
+#define BNO080_REPORT_INTERVAL_MS    1U
 #define BNO080_INIT_TIMEOUT_MS       300U
 #define BNO080_DATA_TIMEOUT_MS       10U
 #define BNO080_MAX_INIT_PACKETS      12U
@@ -645,9 +645,8 @@ uint8_t bno080_init(void)
             return 1;
         }
     }
-    USART3_SendString("[BNO080] Step7: no data yet (will retry in loop)\r\n");
-    USART3_SendString("[BNO080] Init SUCCESS!\r\n");
-    return 1;
+    USART3_SendString("[BNO080] Step7: FAILED - no first data frame\r\n");
+    return 0;
 }
 
 // 主循环更新 (非阻塞): 检测INTN→读包→分发处理

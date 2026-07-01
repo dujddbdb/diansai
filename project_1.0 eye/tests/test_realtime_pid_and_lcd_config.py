@@ -91,7 +91,52 @@ def test_right_angle_imu_compensation_is_enabled():
             raise AssertionError("%s should be used in bsp/vision.c" % name)
 
 
+def test_imu_feedforward_runs_at_1khz_tick():
+    config = read_text("bsp/vision_config.h")
+    header = read_text("bsp/gimbal_pid.h")
+    source = read_text("bsp/gimbal_pid.c")
+    vision_c = read_text("bsp/vision.c")
+    main_c = read_text("app/main.c")
+    bno_c = read_text("bsp/bno080.c")
+
+    for name in (
+        "VISION_IMU_FEEDFORWARD_PERIOD_MS",
+        "VISION_IMU_DRAIN_MAX_PACKETS",
+        "VISION_IMU_FEEDFORWARD_ALWAYS_ON",
+        "VISION_CONTROL_PERIOD_MS",
+        "VISION_IMU_KALMAN_ANGLE_Q",
+        "VISION_IMU_KALMAN_RATE_Q",
+        "VISION_IMU_KALMAN_BIAS_Q",
+        "VISION_IMU_KALMAN_MEAS_R",
+        "VISION_IMU_KALMAN_RATE_DECAY",
+        "VISION_IMU_BIAS_LIMIT_DEG",
+        "VISION_IMU_RATE_LIMIT_DPS",
+    ):
+        if name not in config:
+            raise AssertionError("%s should be declared in vision_config.h" % name)
+
+    if "#define BNO080_REPORT_INTERVAL_MS    1U" not in bno_c:
+        raise AssertionError("EYE BNO080 should request the fastest report interval")
+    if "GimbalDualPID_UpdateFeedforward" not in header + source:
+        raise AssertionError("IMU feedforward should have a PID-state-safe API")
+    if "Vision_ReadLatestIMUFrame" not in vision_c:
+        raise AssertionError("IMU tick should drain available BNO080 frames")
+    if "VISION_IMU_DRAIN_MAX_PACKETS" not in vision_c:
+        raise AssertionError("IMU drain loop should be bounded")
+    if "predicted_measurement = kf->angle + kf->bias" not in vision_c:
+        raise AssertionError("IMU Kalman should estimate drift/bias")
+    if "VISION_IMU_KALMAN_BIAS_Q" not in vision_c:
+        raise AssertionError("IMU Kalman bias process noise should be used")
+    if "GimbalDualPID_UpdateFeedforward(&s_gimbal_pid)" not in vision_c:
+        raise AssertionError("1kHz tick should not run the visual PID path")
+    if "Vision_GimbalIMUCompensationTick();" not in main_c:
+        raise AssertionError("main loop should call 1kHz IMU feedforward wrapper")
+    if "Eye_WaitForIMUData" not in main_c:
+        raise AssertionError("EYE startup should wait for the first IMU frame")
+
+
 if __name__ == "__main__":
     test_lcd_is_enabled_without_ide_stream()
     test_pid_gain_schedule_is_gradual()
     test_right_angle_imu_compensation_is_enabled()
+    test_imu_feedforward_runs_at_1khz_tick()

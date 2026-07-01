@@ -59,8 +59,12 @@ int main(void)
     /* 主循环: 100Hz视觉追踪调度 */
     while (1) {
         uint32_t now_ms = HAL_GetTick();
+        if ((uint32_t)(now_ms - last_imu_ms) >= VISION_IMU_FEEDFORWARD_PERIOD_MS) {
+            last_imu_ms = now_ms;
+            Vision_GimbalIMUCompensationTick();
+        }
         (void)imu_ready;
-        if ((uint32_t)(now_ms - last_vision_ms) < 5U) {
+        if ((uint32_t)(now_ms - last_vision_ms) < VISION_CONTROL_PERIOD_MS) {
             continue;
         }
         last_vision_ms = now_ms;

@@ -30,10 +30,16 @@ typedef enum {
 typedef struct {
     float angle;
     float rate;
+    float bias;
     float p00;
     float p01;
+    float p02;
     float p10;
     float p11;
+    float p12;
+    float p20;
+    float p21;
+    float p22;
     float p;
     uint8_t valid;
 } Vision_AngleKalman_t;
@@ -97,10 +103,16 @@ static void Vision_AngleKalmanStep(Vision_AngleKalman_t *kf,
         if (!has_measurement) return;
         kf->angle = measurement_deg;
         kf->rate = 0.0f;
+        kf->bias = 0.0f;
         kf->p00 = 1.0f;
         kf->p01 = 0.0f;
+        kf->p02 = 0.0f;
         kf->p10 = 0.0f;
         kf->p11 = 1.0f;
+        kf->p12 = 0.0f;
+        kf->p20 = 0.0f;
+        kf->p21 = 0.0f;
+        kf->p22 = 1.0f;
         kf->p = 1.0f;
         kf->valid = 1U;
         return;
@@ -108,17 +120,28 @@ static void Vision_AngleKalmanStep(Vision_AngleKalman_t *kf,
 
     /* 预测阶段: 角度积分 + 协方差矩阵更新 */
     kf->angle += kf->rate * dt_s;
+    kf->rate *= rate_decay;
 
     p00 = kf->p00 + dt_s * (kf->p10 + kf->p01) +
-          dt_s * dt_s * kf->p11 + VISION_IMU_KALMAN_Q;
-    p01 = kf->p01 + dt_s * kf->p11;
-    p10 = kf->p10 + dt_s * kf->p11;
-    p11 = kf->p11 + VISION_IMU_KALMAN_RATE_Q;
+          dt_s * dt_s * kf->p11 + VISION_IMU_KALMAN_ANGLE_Q;
+    p01 = rate_decay * (kf->p01 + dt_s * kf->p11);
+    p02 = kf->p02 + dt_s * kf->p12;
+    p10 = rate_decay * (kf->p10 + dt_s * kf->p11);
+    p11 = rate_decay * rate_decay * kf->p11 + VISION_IMU_KALMAN_RATE_Q;
+    p12 = rate_decay * kf->p12;
+    p20 = kf->p20 + dt_s * kf->p21;
+    p21 = rate_decay * kf->p21;
+    p22 = kf->p22 + VISION_IMU_KALMAN_BIAS_Q;
 
     kf->p00 = p00;
     kf->p01 = p01;
+    kf->p02 = p02;
     kf->p10 = p10;
     kf->p11 = p11;
+    kf->p12 = p12;
+    kf->p20 = p20;
+    kf->p21 = p21;
+    kf->p22 = p22;
 
     /* 无测量值: 仅预测，跳过更新 */
     if (!has_measurement) return;
@@ -129,18 +152,39 @@ static void Vision_AngleKalmanStep(Vision_AngleKalman_t *kf,
     s = kf->p00 + VISION_IMU_KALMAN_R;
     if (s <= 1.0e-6f) return;
 
-    k0 = kf->p00 / s;
-    k1 = kf->p10 / s;
+    k0 = (kf->p00 + kf->p02) / s;
+    k1 = (kf->p10 + kf->p12) / s;
+    k2 = (kf->p20 + kf->p22) / s;
     p00 = kf->p00;
     p01 = kf->p01;
+    p02 = kf->p02;
+    p10 = kf->p10;
+    p11 = kf->p11;
+    p12 = kf->p12;
+    p20 = kf->p20;
+    p21 = kf->p21;
+    p22 = kf->p22;
 
     kf->angle += k0 * innovation;
     kf->rate += k1 * innovation;
+    kf->bias += k2 * innovation;
 
-    kf->p00 = (1.0f - k0) * p00;
-    kf->p01 = (1.0f - k0) * p01;
-    kf->p10 = kf->p10 - k1 * p00;
-    kf->p11 = kf->p11 - k1 * p01;
+    kf->rate = Vision_ClampFloat(kf->rate,
+                                 -VISION_IMU_RATE_LIMIT_DPS,
+                                 VISION_IMU_RATE_LIMIT_DPS);
+    kf->bias = Vision_ClampFloat(kf->bias,
+                                 -VISION_IMU_BIAS_LIMIT_DEG,
+                                 VISION_IMU_BIAS_LIMIT_DEG);
+
+    kf->p00 = p00 - k0 * (p00 + p20);
+    kf->p01 = p01 - k0 * (p01 + p21);
+    kf->p02 = (1.0f - k0) * p02 - k0 * p22;
+    kf->p10 = p10 - k1 * (p00 + p20);
+    kf->p11 = p11 - k1 * (p01 + p21);
+    kf->p12 = p12 - k1 * (p02 + p22);
+    kf->p20 = p20 - k2 * (p00 + p20);
+    kf->p21 = p21 - k2 * (p01 + p21);
+    kf->p22 = p22 - k2 * (p02 + p22);
     kf->p = kf->p00;
 }
 
@@ -196,7 +240,7 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
     uint32_t dt_ms;
     float dt_s;
     float corner_blend = UART5_CarCornerBlend(now_ms);
-    uint8_t corner_active = (corner_blend >= VISION_IMU_MIN_CORNER_BLEND) ? 1U : 0U;
+    uint8_t compensation_enabled;
     uint8_t has_measurement;
     float roll_deg = 0.0f, pitch_deg = 0.0f, yaw_deg = 0.0f;
     float filtered_yaw, filtered_pitch;
@@ -214,7 +258,7 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
 
     /* 计算时间间隔dt并限幅 */
     if (last_kalman_ms == 0U) {
-        dt_ms = 10U;
+        dt_ms = VISION_IMU_FEEDFORWARD_PERIOD_MS;
     } else {
         dt_ms = (uint32_t)(now_ms - last_kalman_ms);
     }
@@ -264,8 +308,6 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
                                            dt_s);
         }
 
-        last_yaw_deg = filtered_yaw;
-        last_pitch_deg = filtered_pitch;
         return 1U;
     }
 
@@ -412,15 +454,21 @@ void Vision_GimbalPID_ClearIntegral(void)
     GimbalDualPID_ClearIntegral(&s_gimbal_pid);
 }
 
+void Vision_IMUFeedforward1kTick(void)
+{
+    uint8_t imu_comp_pending;
+
+    if (!s_initialized) return;
+
+    imu_comp_pending = Vision_UpdateGimbalIMUCompensation();
+    if (imu_comp_pending && s_eye_mode != VISION_MODE_IDLE) {
+        GimbalDualPID_UpdateFeedforward(&s_gimbal_pid);
+    }
+}
+
 void Vision_GimbalIMUCompensationTick(void)
 {
-    if (!s_initialized) return;
-    if (s_last_fresh_packet) return;
-
-    Vision_UpdateGimbalRuntimeSpeed(0.0f, 0.0f);
-    GimbalDualPID_Update(&s_gimbal_pid, 0.0f, 0.0f);
-    s_vision_ctx.gimbal_x_angle = (int16_t)s_gimbal_pid.x_axis.output;
-    s_vision_ctx.gimbal_y_angle = (int16_t)s_gimbal_pid.y_axis.output;
+    Vision_IMUFeedforward1kTick();
 }
 
 GimbalDualPID_t* Vision_GimbalPID_GetController(void)
@@ -522,7 +570,6 @@ void Vision_Init(void)
 void Vision_Process(void)
 {
     uint8_t fresh_packet = 0U;
-    uint8_t imu_comp_pending = 0U;
 
     if (!s_initialized) return;
 
