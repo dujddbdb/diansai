@@ -71,13 +71,16 @@ static inline uint8_t RightAngleDetector_Update(RightAngleDetector_t *detector,
     uint8_t i;
     uint8_t type;
 
-    // 黑电平去抖滤波
+    // 逐通道黑电平去抖滤波
     for (i = 0U; i < 8U; ++i) {
         uint8_t mask = (uint8_t)(1U << i);
+        // 当前为白：清零计数，输出置白
         if ((raw & mask) != 0U) {
             detector->black_hits[i] = 0U;
             detector->filtered |= mask;
-        } else {
+        }
+        // 当前为黑：计数+1，达到阈值则输出置黑
+        else {
             if (detector->black_hits[i] < RIGHT_ANGLE_BLACK_CONFIRM_SAMPLES) {
                 detector->black_hits[i]++;
             }
@@ -87,21 +90,26 @@ static inline uint8_t RightAngleDetector_Update(RightAngleDetector_t *detector,
         }
     }
 
-    // 直角特征确认
+    // 直角特征去抖确认
     type = RightAngleDetector_Feature(detector->filtered);
+    // 无特征：清零类型和计数
     if (type == 0U) {
         detector->feature_type = 0U;
         detector->feature_hits = 0U;
-    } else if (type == detector->feature_type) {
+    }
+    // 同类型特征：计数累加（去抖）
+    else if (type == detector->feature_type) {
         if (detector->feature_hits < RIGHT_ANGLE_FEATURE_CONFIRM_SAMPLES) {
             detector->feature_hits++;
         }
-    } else {
+    }
+    // 不同类型特征：重置类型和计数
+    else {
         detector->feature_type = type;
         detector->feature_hits = 1U;
     }
 
-    // 全白确认(出弯判断)
+    // 全白状态去抖确认（出弯判断用）
     if (RightAngleDetector_AllWhite(detector->filtered)) {
         if (detector->white_hits < RIGHT_ANGLE_WHITE_CONFIRM_SAMPLES) {
             detector->white_hits++;
