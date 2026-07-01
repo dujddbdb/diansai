@@ -2,7 +2,7 @@
 """
 K230 target detection + LCD preview + UART3 raw tracking output.
 
-The sensor captures full 1080p frames. Detection runs on a 320x240
+The sensor captures 1920x1080 frames. Detection runs on a 320x240
 crop centered on the calibrated full-frame laser/origin point.
 """
 
@@ -61,7 +61,7 @@ except ImportError:
 
 
 # ============================================================
-# 用户可调参数区 (已放大适配640x480)
+# 用户可调参数区
 # ============================================================
 # 图像与通信
 IMG_W = 320
@@ -92,7 +92,7 @@ CV_MIN_EDGE = 6
 # find_rects 回退方案
 FIND_RECTS_THRESHOLD = 4500
 
-# A4黑框靶标尺寸约束 (640x480分辨率，面积×4)
+# A4黑框靶标尺寸约束 (320x240检测裁剪)
 OUTER_MIN_AREA = 900
 OUTER_MAX_AREA = 70000
 RECT_MIN_ANGLE = 48
@@ -101,7 +101,7 @@ ASPECT_MAX = 1.75
 BLACK_GRAY_TH = 95
 WHITE_GRAY_TH = 135
 
-# ROI追踪 (分辨率翻倍，边距×2)
+# ROI追踪 (320x240检测裁剪)
 TRACK_MARGIN = 56
 TRACK_MARGIN_MAX = 160
 TRACK_MARGIN_VEL_GAIN = 2
