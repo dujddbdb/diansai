@@ -7,12 +7,15 @@ void USART3_Init(uint32_t baud)
 {
     GPIO_InitTypeDef g; USART_InitTypeDef u;
 
+    // 使能GPIOD和USART3时钟
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART3, ENABLE);
 
+    // 配置PD8/PD9复用为USART3
     GPIO_PinAFConfig(GPIOD, GPIO_PinSource8, GPIO_AF_USART3);
     GPIO_PinAFConfig(GPIOD, GPIO_PinSource9, GPIO_AF_USART3);
 
+    // 配置PD8(TX)：复用功能、100MHz、推挽、上拉
     g.GPIO_Pin   = GPIO_Pin_8;
     g.GPIO_Mode  = GPIO_Mode_AF;
     g.GPIO_Speed = GPIO_Speed_100MHz;
@@ -20,19 +23,28 @@ void USART3_Init(uint32_t baud)
     g.GPIO_PuPd  = GPIO_PuPd_UP;
     GPIO_Init(GPIOD, &g);
 
+    // 配置PD9(RX)：复用功能、100MHz、推挽、上拉
     g.GPIO_Pin = GPIO_Pin_9;
     GPIO_Init(GPIOD, &g);
 
+    // 复位USART3并使用默认配置
     USART_DeInit(USART3);
     USART_StructInit(&u);
 
+    // 配置波特率
     u.USART_BaudRate            = baud;
+    // 8位数据长度
     u.USART_WordLength          = USART_WordLength_8b;
+    // 1个停止位
     u.USART_StopBits            = USART_StopBits_1;
+    // 无校验
     u.USART_Parity              = USART_Parity_No;
+    // 收发模式
     u.USART_Mode                = USART_Mode_Tx | USART_Mode_Rx;
+    // 无硬件流控
     u.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
 
+    // 初始化USART3并使能
     USART_Init(USART3, &u);
     USART_Cmd(USART3, ENABLE);
 }
@@ -42,7 +54,9 @@ void USART3_SendByte(uint8_t data)
 {
     uint16_t t = 0;
 
+    // 将数据写入发送数据寄存器
     USART3->DR = data;
+    // 等待发送数据寄存器为空，超时则返回
     while (!(USART3->SR & USART_FLAG_TXE)) { if (++t > 8000) return; }
 }
 

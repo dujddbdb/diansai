@@ -1,87 +1,227 @@
 #ifndef __TRACK_CONFIG_H__
 #define __TRACK_CONFIG_H__
 
-// 基础巡线参数
-#define BASE_RPM             80.0f   // 基础巡线转速(RPM)
-#define STRAIGHT_RPM_LIMIT   150.0f  // 直道最高转速限制(RPM)
-#define RAMP_STARTUP         0.1f    // 启动加速度斜率(RPM/ms)
+// ============================================================
+//  基础巡线参数
+// ============================================================
+#define BASE_RPM             80.0f   // 基础巡线转速(RPM)，直道巡航基准速度
+                                    // 调大：整体速度更快，但过弯压力更大
+                                    // 调小：整体速度更慢，更稳定
+#define STRAIGHT_RPM_LIMIT   150.0f  // 直道最高转速限制(RPM)，直道加速上限
+                                    // 调大：直道更快，但需要更长减速距离
+                                    // 调小：直道更慢，更安全
+#define RAMP_STARTUP         0.1f    // 启动加速度斜率(RPM/ms)，启动时转速上升速率
+                                    // 调大：启动更快更猛，但可能打滑
+                                    // 调小：启动更平缓更稳，但加速慢
 
-// 巡线位置PID参数
-#define KP_NORMAL            0.055f  // 巡线PID比例系数
-#define KI_NORMAL            0.0f    // 巡线PID积分系数
-#define KD_NORMAL            0.20f   // 巡线PID微分系数
+// ============================================================
+//  巡线位置PID参数
+// ============================================================
+#define KP_NORMAL            0.055f  // 巡线PID比例系数，响应偏差的主要力度
+                                    // 调大：响应更快，纠偏更有力，但可能超调振荡
+                                    // 调小：响应更慢，更平稳，但纠偏不及时
+#define KI_NORMAL            0.0f    // 巡线PID积分系数，消除稳态误差
+                                    // 调大：消除静态偏差更快，但易引起超调和震荡
+                                    // 调小：消除静态偏差更慢，系统更稳定
+#define KD_NORMAL            0.20f   // 巡线PID微分系数，抑制超调和振荡
+                                    // 调大：抑制振荡效果更好，响应更稳，但对噪声敏感
+                                    // 调小：响应更快，但易超调振荡
 #define ERR_FILTER_ALPHA     0.9f    // 巡线误差低通滤波系数(0-1, 1=无滤波)
-#define PID_FILTER_ALPHA     0.80f   // 巡线PID输出低通滤波系数
+                                    // 调大：滤波更弱，响应更快，但抖动更多
+                                    // 调小：滤波更强，更平滑，但延迟更大
+#define PID_FILTER_ALPHA     0.80f   // 巡线PID输出低通滤波系数(0-1, 1=无滤波)
+                                    // 调大：输出更灵敏，响应更快，但电机抖动多
+                                    // 调小：输出更平滑，电机更稳，但响应延迟大
 
-// 灰度传感器配置
-#define GRAY_DIRECTION       1       // 0-通道0对应传感器1(左到右) 1-反向(通道0对应传感器8)
+// ============================================================
+//  灰度传感器配置
+// ============================================================
+#define GRAY_DIRECTION       1       // 灰度传感器方向配置
+                                    // 0-通道0对应传感器1(从左到右排列)
+                                    // 1-反向(通道0对应传感器8，从右到左排列)
 #define GRAY_THRESHOLD_SHIFT 0.6f    // 灰度二值化阈值偏移量(0-1)
-#define GRAY_ANALOG_EMA_ENABLE        1     // 0-关闭模拟量EMA滤波 1-开启
-#define GRAY_ANALOG_EMA_PREV_WEIGHT   7     // EMA旧值权重(越大越平滑)
+                                    // 调大：阈值偏高，更多像素被判为白
+                                    // 调小：阈值偏低，更多像素被判为黑
+#define GRAY_ANALOG_EMA_ENABLE        1     // 模拟量EMA滤波开关
+                                          // 0-关闭模拟量EMA滤波
+                                          // 1-开启模拟量EMA滤波
+#define GRAY_ANALOG_EMA_PREV_WEIGHT   7     // EMA旧值权重(越大越平滑，延迟越大)
+                                          // 调大：滤波更强更平滑，但响应延迟更大
+                                          // 调小：响应更快，但抖动噪声更多
 #define GRAY_ANALOG_EMA_NEW_WEIGHT    3     // EMA新值权重(越大响应越快)
-#define GRAY_ANALOG_EMA_TOTAL_WEIGHT  10    // EMA权重总和(PREV+NEW)
+                                          // 调大：响应更快，跟踪更灵敏，但抖动多
+                                          // 调小：更平滑稳定，但响应慢
+#define GRAY_ANALOG_EMA_TOTAL_WEIGHT  10    // EMA权重总和(PREV+NEW)，用于归一化
 
-// 直角检测参数
+// ============================================================
+//  直角检测参数
+// ============================================================
 #define RIGHT_ANGLE_BLACK_CONFIRM_SAMPLES   8U    // 黑电平确认采样数(去抖)
+                                                  // 连续多少个采样周期检测到黑线才确认
+                                                  // 调大：抗干扰能力强，但检测延迟大
+                                                  // 调小：检测更灵敏，但易误触发
 #define RIGHT_ANGLE_FEATURE_CONFIRM_SAMPLES 1U    // 直角特征确认采样数
+                                                  // 连续多少个采样周期检测到直角特征才确认
+                                                  // 调大：检测更可靠，但响应慢
+                                                  // 调小：响应更快，但易误判
 #define RIGHT_ANGLE_WHITE_CONFIRM_SAMPLES   2U    // 全白确认采样数
+                                                  // 连续多少个采样周期检测到全白才确认
+                                                  // 调大：抗干扰强，但退出慢
+                                                  // 调小：退出快，但易误退出
 #define RIGHT_ANGLE_WHITE_MIN               8U    // 判定全白所需最少白通道数
+                                                  // 多少个传感器检测到白色才算全白
+                                                  // 调大：全白判定更严格，不易误判
+                                                  // 调小：全白判定更宽松，易触发
 
-// 直角转弯控制参数
-#define CORNER_YAW_TARGET             90.0f   // 转弯目标偏航角度(度)
+// ============================================================
+//  直角转弯控制参数
+// ============================================================
+#define CORNER_YAW_TARGET             90.0f   // 转弯目标偏航角度(度)，90度直角弯
 #define CORNER_GRAY_BLEND_START_DEG   80.0f   // 80度开始灰度渐变接管
-#define CORNER_IMU_EXIT_DEG           85.0f   // 85度退出直角状态
+                                              // 转弯到多少度时开始从IMU控制过渡到灰度控制
+                                              // 调大：更早过渡到灰度，出弯更顺
+                                              // 调小：更晚过渡，IMU控制时间更长
+#define CORNER_IMU_EXIT_DEG           85.0f   // 85度退出直角状态机
+                                              // 转弯到多少度时退出直角转弯状态
+                                              // 调大：更早退出，直道恢复更快
+                                              // 调小：更晚退出，转弯更充分
 #define KP_CORNER_YAW                 1.85f   // 转弯偏航PID比例系数
+                                              // 调大：转向响应更快更猛，但易超调
+                                              // 调小：转向更平缓，但反应慢
 #define KD_CORNER_YAW                 22.0f   // 转弯偏航PID微分系数
-#define CORNER_TURN_RPM               40.0f   // 转弯基础转速(RPM)
-#define CORNER_MIN_RPM                20.0f   // 转弯最低转速(RPM)
-#define CORNER_MAX_RPM                92.0f   // 转弯最高转速(RPM)
+                                              // 调大：抑制超调更好，更稳，但对噪声敏感
+                                              // 调小：响应更快，但易超调振荡
+#define CORNER_TURN_RPM               40.0f   // 转弯基础转速(RPM)，转弯时的基准速度
+                                              // 调大：转弯更快，但离心力大易冲出
+                                              // 调小：转弯更慢，更稳定，但耗时久
+#define CORNER_MIN_RPM                20.0f   // 转弯最低转速(RPM)，差速时内侧轮最低速度
+                                              // 调大：内侧轮速度不太低，出弯加速快
+                                              // 调小：内侧轮更慢，转弯半径更小
+#define CORNER_MAX_RPM                92.0f   // 转弯最高转速(RPM)，差速时外侧轮最高速度
+                                              // 调大：外侧轮更快，转弯更猛
+                                              // 调小：外侧轮更慢，更平稳
 
-// 转弯过渡曲线参数
-#define CORNER_PID_SMOOTH_ALPHA           0.30f   // 转弯PID平滑滤波系数
+// ============================================================
+//  转弯过渡曲线参数
+// ============================================================
+#define CORNER_PID_SMOOTH_ALPHA           0.30f   // 转弯PID平滑滤波系数(0-1, 1=无滤波)
+                                                  // 调大：响应更快更灵敏，但抖动多
+                                                  // 调小：更平滑更稳，但延迟大
 #define CORNER_PREVIEW_DECEL_RPM          16.0f   // 预览减速转速量(RPM)
-#define CORNER_ENTRY_BLEND_PROGRESS       0.30f   // IMU差速在前20%角度进度内平滑拉起
+                                                  // 检测到弯道后提前减速的幅度
+                                                  // 调大：减速更多，入弯更稳
+                                                  // 调小：减速更少，速度更快
+#define CORNER_ENTRY_BLEND_PROGRESS       0.30f   // 入弯IMU差速平滑拉起进度(0-1)
+                                                  // 在前多少比例的转弯角度内平滑增加差速
+                                                  // 调大：平滑过渡时间更长，更平缓
+                                                  // 调小：快速拉起差速，响应快但突兀
 #define CORNER_SPEED_EXIT_START_PROGRESS  0.55f   // 出弯加速起始进度(0-1)
-#define CORNER_SPEED_EXIT_BLEND_WIDTH     0.45f   // 出弯加速过渡宽度
+                                                  // 转弯到多少进度时开始加速出弯
+                                                  // 调大：更晚开始加速，出弯更稳
+                                                  // 调小：更早开始加速，出弯更快
+#define CORNER_SPEED_EXIT_BLEND_WIDTH     0.45f   // 出弯加速过渡宽度(0-1)
+                                                  // 加速过程占整个转弯的比例
+                                                  // 调大：加速过程更长更平缓
+                                                  // 调小：加速更快更猛
 #define CORNER_GYRO_DIFF_LIMIT_RPM        65.0f   // 转弯陀螺仪差速限幅(RPM)
+                                                  // 陀螺仪控制的左右轮最大速度差
+                                                  // 调大：差速更大，转向更猛
+                                                  // 调小：差速更小，转向更平缓
 #define CORNER_DIFF_SLEW_UP_RPM_PER_MS    1.15f   // 转弯差速上升斜率(RPM/ms)
+                                                  // 差速增加的最大速率
+                                                  // 调大：差速变化更快，转向响应快
+                                                  // 调小：差速变化更慢，更平稳
 #define CORNER_BASE_SLEW_DOWN_RPM_PER_MS  0.90f   // 转弯基础转速下降斜率(RPM/ms)
+                                                  // 入弯减速的最大速率
+                                                  // 调大：减速更快，入弯速度降得快
+                                                  // 调小：减速更平缓，更顺滑
 #define CORNER_BASE_SLEW_UP_RPM_PER_MS    0.25f   // 转弯基础转速上升斜率(RPM/ms)
+                                                  // 出弯加速的最大速率
+                                                  // 调大：加速更快，出弯提速快
+                                                  // 调小：加速更平缓，更稳
 #define WHEEL_COMMAND_SLEW_RPM_PER_MS     2.20f   // 轮指令斜率限制(RPM/ms)
+                                                  // 单个车轮转速指令的最大变化率
+                                                  // 调大：轮速变化更快，响应灵敏
+                                                  // 调小：轮速变化更缓，更平稳
 
-// 陀螺仪参数
+// ============================================================
+//  陀螺仪参数
+// ============================================================
 #define GYRO_YAW_DIRECTION    1           // 陀螺仪偏航方向系数(±1)
-#define GYRO_STRAIGHT_DAMPING_ENABLE  1   // 0-关闭直道陀螺仪阻尼 1-开启
+                                          // 根据陀螺仪安装方向调整，确保转向方向正确
+#define GYRO_STRAIGHT_DAMPING_ENABLE  1   // 直道陀螺仪阻尼开关
+                                          // 0-关闭直道陀螺仪阻尼
+                                          // 1-开启直道陀螺仪阻尼
 #define KD_GYRO_STRAIGHT              5.5f   // 直道陀螺仪阻尼微分系数
+                                              // 直道行驶时用陀螺仪抑制车身摆动
+                                              // 调大：抑制摆动效果更强，走得更直
+                                              // 调小：抑制效果弱，但响应更自然
 #define GYRO_STRAIGHT_LIMIT           15.0f  // 直道陀螺仪阻尼输出限幅(RPM)
+                                              // 陀螺仪阻尼作用的最大修正量
+                                              // 调大：修正幅度更大，纠偏能力强
+                                              // 调小：修正幅度小，更柔和
 #define GYRO_MAIN_POLL_PERIOD_MS      10U    // 陀螺仪主轮询周期(ms)
+                                              // 陀螺仪数据读取的时间间隔
 
-// 速度环PID参数
+// ============================================================
+//  速度环PID参数
+// ============================================================
 #define KP_VELOCITY           20.233530f  // 速度环PID比例系数
+                                          // 调大：速度响应更快，但易超调振荡
+                                          // 调小：速度响应更慢，但更平稳
 #define KI_VELOCITY           8.702225f   // 速度环PID积分系数
+                                          // 调大：消除速度误差更快，但易超调
+                                          // 调小：消除速度误差更慢，但更稳定
 #define KD_VELOCITY           0.17609f    // 速度环PID微分系数
+                                          // 调大：抑制速度波动更好，但对噪声敏感
+                                          // 调小：响应更快，但速度波动大
 #define VELOCITY_PWM_LIMIT    500         // 速度环PWM输出限幅
+                                          // 电机PWM占空比的最大值限制
 #define INTEGRAL_LIMIT        600         // 速度环积分限幅
+                                          // 积分项的最大值，防止积分饱和
 #define LEFT_RPM_CORRECTION   1.0f        // 左轮转速修正系数
+                                          // 用于修正左右轮机械差异
+                                          // 调大：左轮速度相对更快
+                                          // 调小：左轮速度相对更慢
 #define RIGHT_RPM_CORRECTION  1.0f        // 右轮转速修正系数
+                                          // 用于修正左右轮机械差异
+                                          // 调大：右轮速度相对更快
+                                          // 调小：右轮速度相对更慢
 
-// 编码器参数
-#define ENCODER_LINE        11U         // 编码器线数
-#define REDUCTION_RATIO     30U         // 电机减速比
-#define ENCODER_MULTIPLE    4U          // 编码器倍频
-#define PULSE_PER_ROUND     (ENCODER_LINE * REDUCTION_RATIO * ENCODER_MULTIPLE) // 每圈脉冲数
-#define SAMPLE_TIME         0.005f      // 速度采样周期(s)
-#define RPM_COEFFICIENT     (60.0f / ((float)PULSE_PER_ROUND * SAMPLE_TIME)) // RPM转换系数
+// ============================================================
+//  编码器参数
+// ============================================================
+#define ENCODER_LINE        11U         // 编码器线数，每圈的脉冲数(倍频前)
+#define REDUCTION_RATIO     30U         // 电机减速比，电机转速与轮速之比
+#define ENCODER_MULTIPLE    4U          // 编码器倍频，4倍频(A/B相各沿触发)
+#define PULSE_PER_ROUND     (ENCODER_LINE * REDUCTION_RATIO * ENCODER_MULTIPLE) // 车轮每圈脉冲数
+#define SAMPLE_TIME         0.005f      // 速度采样周期(s)，计算转速的时间窗口
+#define RPM_COEFFICIENT     (60.0f / ((float)PULSE_PER_ROUND * SAMPLE_TIME)) // 脉冲数转RPM系数
 
-// 电机/编码器方向配置
-#define ENCODER_LEFT_INVERT   0 // 0-不反转左轮编码器 1-反转
-#define ENCODER_RIGHT_INVERT  1 // 0-不反转右轮编码器 1-反转
-#define LR_SWAP              0 // 0-不交换左右轮 1-交换
-#define LEFT_MOTOR_REVERSE   0 // 0-不反转左轮电机 1-反转
-#define RIGHT_MOTOR_REVERSE  0 // 0-不反转右轮电机 1-反转
+// ============================================================
+//  电机/编码器方向配置
+// ============================================================
+#define ENCODER_LEFT_INVERT   0 // 左轮编码器方向反转
+                                // 0-不反转左轮编码器方向
+                                // 1-反转左轮编码器方向
+#define ENCODER_RIGHT_INVERT  1 // 右轮编码器方向反转
+                                // 0-不反转右轮编码器方向
+                                // 1-反转右轮编码器方向
+#define LR_SWAP              0 // 左右轮交换
+                                // 0-不交换左右轮
+                                // 1-交换左右轮控制输出
+#define LEFT_MOTOR_REVERSE   0 // 左轮电机方向反转
+                                // 0-不反转左轮电机方向
+                                // 1-反转左轮电机方向
+#define RIGHT_MOTOR_REVERSE  0 // 右轮电机方向反转
+                                // 0-不反转右轮电机方向
+                                // 1-反转右轮电机方向
 
-// 圈数计数参数
-#define TRACK_CORNERS_PER_LAP         4U  // 每圈直角弯数量
-#define TRACK_TARGET_LAPS_MAX         9U  // 最大目标圈数
+// ============================================================
+//  圈数计数参数
+// ============================================================
+#define TRACK_CORNERS_PER_LAP         4U  // 每圈直角弯数量，用于圈数统计
+                                          // 每经过多少个直角弯算一圈
+#define TRACK_TARGET_LAPS_MAX         9U  // 最大目标圈数，比赛最多跑多少圈
 
 #endif

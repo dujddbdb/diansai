@@ -1,8 +1,11 @@
 #include "vision_strategy.h"
 
+// 视觉策略状态实例
 static VisionStrategy_t s_state;
+// 蛇形扫描定时器
 static uint16_t         s_scan_timer = 0;
 
+// 浮点数钳位函数: 将val限制在[min_v, max_v]范围内
 static inline float clampf(float val, float min_v, float max_v)
 {
     if (val < min_v) return min_v;
@@ -10,14 +13,22 @@ static inline float clampf(float val, float min_v, float max_v)
     return val;
 }
 
+// 视觉策略初始化
 void VisionStrategy_Init(void)
 {
+    // 初始化ROI状态为全图模式
     s_state.roi_state      = ROI_FULL;
+    // 清零锁定计数
     s_state.lock_count     = 0;
+    // 清零丢失计数
     s_state.lose_count     = 0;
+    // 清零云台X轴角度
     s_state.gimbal_x_angle = 0.0f;
+    // 清零云台Y轴角度
     s_state.gimbal_y_angle = 0.0f;
+    // 关闭扫描状态
     s_state.scanning       = 0;
+    // 清零扫描定时器
     s_scan_timer           = 0;
 }
 
@@ -27,9 +38,12 @@ void VisionStrategy_Init(void)
 // 阶段3: ROI_FULL   — 全图扫描搜索目标
 void VisionStrategy_Update(uint8_t target_detected)
 {
+    // 目标检测到的情况
     if (target_detected) {
+        // 目标出现，清零丢失计数
         s_state.lose_count = 0;
 
+        // 锁定计数累加(防止溢出)
         if (s_state.lock_count < 65535) {
             s_state.lock_count++;
         }
@@ -41,8 +55,10 @@ void VisionStrategy_Update(uint8_t target_detected)
             s_state.scanning  = 0;
         }
     } else {
+        // 目标丢失的情况: 清零锁定计数
         s_state.lock_count = 0;
 
+        // 丢失计数累加(防止溢出)
         if (s_state.lose_count < 65535) {
             s_state.lose_count++;
         }
@@ -63,16 +79,19 @@ void VisionStrategy_Update(uint8_t target_detected)
     }
 }
 
+// 获取当前ROI状态
 ROI_State_t VisionStrategy_GetROIState(void)
 {
     return s_state.roi_state;
 }
 
+// 获取视觉策略状态指针
 VisionStrategy_t* VisionStrategy_GetState(void)
 {
     return &s_state;
 }
 
+// 设置云台角度(由vision.c调用，记录当前云台位置)
 void VisionStrategy_SetGimbalAngle(float x_angle, float y_angle)
 {
     s_state.gimbal_x_angle = x_angle;
@@ -82,6 +101,7 @@ void VisionStrategy_SetGimbalAngle(float x_angle, float y_angle)
 // 云台蛇形扫描搜索: X轴来回扫描，到边界后Y轴步进一行
 void VisionStrategy_GimbalScan(void)
 {
+    // 扫描未启动，直接返回
     if (!s_state.scanning) return;
 
     // 定时器控制扫描步进间隔
@@ -89,6 +109,7 @@ void VisionStrategy_GimbalScan(void)
         s_scan_timer++;
         return;
     }
+    // 定时器归零，准备执行一次步进
     s_scan_timer = 0;
 
     // 蛇形路径: X轴每次步进扫描速度
@@ -114,6 +135,7 @@ void VisionStrategy_GimbalScan(void)
                                     VISION_SCAN_Y_MAX);
 }
 
+// 视觉策略重置
 void VisionStrategy_Reset(void)
 {
     VisionStrategy_Init();

@@ -3,88 +3,208 @@
 
 #include "stm32f4xx.h"
 
-/* PID parameters */
-#define PID_ERROR_BLEND_START          5.0f
-#define PID_ERROR_BLEND_END            60.0f
-#define PID_GAIN_SLEW_FACTOR           0.22f
+// ============================================================
+//  PID误差渐变参数
+// ============================================================
+#define PID_ERROR_BLEND_START          5.0f    // 误差渐变起始值(像素)，误差小于此值时使用小误差PID参数
+                                                // 调大：更早切换到大误差参数，响应更激进
+                                                // 调小：更晚切换到大误差参数，更平稳
+#define PID_ERROR_BLEND_END            60.0f   // 误差渐变结束值(像素)，误差大于此值时使用大误差PID参数
+                                                // 调大：渐变区间更大，参数过渡更平缓
+                                                // 调小：渐变区间更小，参数切换更快
+#define PID_GAIN_SLEW_FACTOR           0.22f   // PID增益变化斜率系数，控制大小误差参数间的过渡速度
+                                                // 调大：增益变化更快，响应更灵敏
+                                                // 调小：增益变化更慢，更平稳顺滑
 
-#define PID_KP_LARGE                   10.0f
-#define PID_KI_LARGE                   0.0f
-#define PID_KD_LARGE                   100.1f
+// ============================================================
+//  大误差PID参数 (误差较大时使用，快速趋近目标)
+// ============================================================
+#define PID_KP_LARGE                   10.0f   // 大误差比例系数，响应偏差的主要力度
+                                                // 调大：响应更快，纠偏更有力，但可能超调振荡
+                                                // 调小：响应更慢，更平稳，但纠偏不及时
+#define PID_KI_LARGE                   0.0f    // 大误差积分系数，消除稳态误差
+                                                // 调大：消除静态偏差更快，但易引起超调和震荡
+                                                // 调小：消除静态偏差更慢，系统更稳定
+#define PID_KD_LARGE                   100.1f  // 大误差微分系数，抑制超调和振荡
+                                                // 调大：抑制振荡效果更好，响应更稳，但对噪声敏感
+                                                // 调小：响应更快，但易超调振荡
 
-#define PID_KP_SMALL                   0.1f
-#define PID_KI_SMALL                   0.0f
-#define PID_KD_SMALL                   50.1f
+// ============================================================
+//  小误差PID参数 (误差较小时使用，精确锁定)
+// ============================================================
+#define PID_KP_SMALL                   0.1f    // 小误差比例系数，精确微调时的响应力度
+                                                // 调大：微调更有力，但易产生振荡
+                                                // 调小：微调更柔和，更稳定
+#define PID_KI_SMALL                   0.0f    // 小误差积分系数，消除小范围稳态误差
+                                                // 调大：消除静态偏差更快，但易引起超调
+                                                // 调小：消除静态偏差更慢，更稳定
+#define PID_KD_SMALL                   50.1f   // 小误差微分系数，小范围抑制振荡
+                                                // 调大：抑制振荡效果更好，但对噪声敏感
+                                                // 调小：响应更快，但易抖动
 
-#define PID_INT_SEPARATION_THRESHOLD   500
-#define GIMBAL_PIXEL_DEADBAND          1.01f
-#define GIMBAL_INTEGRAL_LIMIT_DEG      0.01f
-#define PID_OUTPUT_MAX_X               1.0f
-#define PID_OUTPUT_MAX_Y               1.0f
-#define PIXEL_TO_ANGLE_FACTOR          0.001f
-#define GIMBAL_DERIVATIVE_FILTER_ALPHA 0.35f
-#define GIMBAL_OUTPUT_SLEW_DEG         0.65f
+// ============================================================
+//  PID限制与滤波参数
+// ============================================================
+#define PID_INT_SEPARATION_THRESHOLD   500     // 积分分离阈值(像素)，误差大于此值时取消积分作用
+                                                // 调大：积分作用范围更大，易积分饱和
+                                                // 调小：积分作用范围更小，更安全但消除静差慢
+#define GIMBAL_PIXEL_DEADBAND          1.01f   // 像素死区(像素)，误差小于此值时不输出
+                                                // 调大：死区更大，更稳定但精度降低
+                                                // 调小：死区更小，精度更高但易抖动
+#define GIMBAL_INTEGRAL_LIMIT_DEG      0.01f   // 积分限幅(度)，积分项的最大值限制，防止积分饱和
+                                                // 调大：积分作用更强，消除静差更快但易超调
+                                                // 调小：积分作用更弱，更安全但消除静差慢
+#define PID_OUTPUT_MAX_X               1.0f    // X轴PID输出最大值限制(度)，单次调整的最大角度
+                                                // 调大：单次调整幅度更大，响应更快但易超调
+                                                // 调小：单次调整幅度更小，更平稳但响应慢
+#define PID_OUTPUT_MAX_Y               1.0f    // Y轴PID输出最大值限制(度)，单次调整的最大角度
+                                                // 调大：单次调整幅度更大，响应更快但易超调
+                                                // 调小：单次调整幅度更小，更平稳但响应慢
+#define PIXEL_TO_ANGLE_FACTOR          0.001f  // 像素转角度系数，像素误差到角度误差的转换比例
+                                                // 调大：相同像素误差对应更大角度，响应更猛
+                                                // 调小：相同像素误差对应更小角度，更平缓
+#define GIMBAL_DERIVATIVE_FILTER_ALPHA 0.35f   // 微分项低通滤波系数(0-1, 1=无滤波)
+                                                // 调大：滤波更弱，响应更快但微分项抖动多
+                                                // 调小：滤波更强，更平滑但延迟更大
+#define GIMBAL_OUTPUT_SLEW_DEG         0.65f   // 输出变化率限制(度/周期)，输出值的最大变化量
+                                                // 调大：输出变化更快，响应更灵敏但易突变
+                                                // 调小：输出变化更缓，更平滑但响应慢
 
-/* Stepper configuration */
-#define GIMBAL_ADDR_X                  0x01
-#define GIMBAL_ADDR_Y                  0x01
-#define GIMBAL_RPM_DEFAULT             1.0
-#define GIMBAL_ACC_DEFAULT             1
-#define GIMBAL_PULSES_PER_REV          3200.0f
-#define GIMBAL_DEGREES_PER_REV         360.0f
-#define GIMBAL_PULSES_PER_DEG          (GIMBAL_PULSES_PER_REV / GIMBAL_DEGREES_PER_REV)
+// ============================================================
+//  步进电机配置
+// ============================================================
+#define GIMBAL_ADDR_X                  0x01    // X轴步进电机地址
+#define GIMBAL_ADDR_Y                  0x01    // Y轴步进电机地址
+#define GIMBAL_RPM_DEFAULT             1.0     // 默认转速(RPM)，电机运行的默认速度
+#define GIMBAL_ACC_DEFAULT             1       // 默认加速度，电机启动停止的加速度
+#define GIMBAL_PULSES_PER_REV          3200.0f // 每转脉冲数，步进电机旋转一圈需要的脉冲数
+#define GIMBAL_DEGREES_PER_REV         360.0f  // 每转角度(度)，步进电机旋转一圈的角度
+#define GIMBAL_PULSES_PER_DEG          (GIMBAL_PULSES_PER_REV / GIMBAL_DEGREES_PER_REV) // 每度脉冲数，角度转脉冲的系数
 
-/* IMU feedforward */
-#define GIMBAL_COMPENSATION_FACTOR     0.55f
-#define GIMBAL_YAW_DELTA_THRESHOLD     0.0f
-#define GIMBAL_PITCH_DELTA_THRESHOLD   0.0f
-#define GIMBAL_RATE_FEEDFORWARD_FACTOR 0.045f
-#define GIMBAL_FEEDFORWARD_MAX_DEG     0.80f
+// ============================================================
+//  IMU前馈补偿参数
+// ============================================================
+#define GIMBAL_COMPENSATION_FACTOR     0.55f   // IMU角度补偿系数，IMU角度增量对云台的补偿比例
+                                                // 调大：补偿力度更大，抗干扰能力更强但易过补偿
+                                                // 调小：补偿力度更小，更稳定但抗干扰弱
+#define GIMBAL_YAW_DELTA_THRESHOLD     0.0f    // 偏航角增量阈值(度)，小于此值的IMU增量不补偿
+                                                // 调大：小抖动被过滤，更稳定但响应慢
+                                                // 调小：响应更快，但噪声也会被放大
+#define GIMBAL_PITCH_DELTA_THRESHOLD   0.0f    // 俯仰角增量阈值(度)，小于此值的IMU增量不补偿
+                                                // 调大：小抖动被过滤，更稳定但响应慢
+                                                // 调小：响应更快，但噪声也会被放大
+#define GIMBAL_RATE_FEEDFORWARD_FACTOR 0.045f  // 角速度前馈系数，IMU角速度的前馈补偿比例
+                                                // 调大：前馈力度更大，响应更快但易过冲
+                                                // 调小：前馈力度更小，更平稳但响应慢
+#define GIMBAL_FEEDFORWARD_MAX_DEG     0.80f   // 前馈最大角度(度)，单次前馈补偿的最大角度限制
+                                                // 调大：前馈范围更大，补偿能力更强
+                                                // 调小：前馈范围更小，更安全
 
-#define VISION_IMU_FEEDFORWARD_PERIOD_MS 1U
-#define VISION_IMU_DRAIN_MAX_PACKETS     6U
-#define VISION_CONTROL_PERIOD_MS         5U
-#define VISION_IMU_FEEDFORWARD_ALWAYS_ON 1U
+// ============================================================
+//  IMU前馈时序参数
+// ============================================================
+#define VISION_IMU_FEEDFORWARD_PERIOD_MS 1U     // IMU前馈更新周期(ms)，前馈补偿的执行频率
+#define VISION_IMU_DRAIN_MAX_PACKETS     6U     // IMU数据包最大排空数，每周期最多处理的IMU数据包数量
+#define VISION_CONTROL_PERIOD_MS         5U     // 视觉控制周期(ms)，PID计算和云台控制的执行频率
+#define VISION_IMU_FEEDFORWARD_ALWAYS_ON 1U     // IMU前馈常开关，1-始终开启前馈，0-仅锁定时开启
 
-#define VISION_IMU_KALMAN_ANGLE_Q      0.002f
-#define VISION_IMU_KALMAN_RATE_Q       0.10f
-#define VISION_IMU_KALMAN_BIAS_Q       0.00008f
-#define VISION_IMU_KALMAN_MEAS_R       0.90f
-#define VISION_IMU_KALMAN_RATE_DECAY   0.996f
-#define VISION_IMU_KALMAN_Q            VISION_IMU_KALMAN_ANGLE_Q
-#define VISION_IMU_KALMAN_R            VISION_IMU_KALMAN_MEAS_R
-#define VISION_IMU_DELTA_LIMIT_DEG     3.0f
-#define VISION_IMU_BIAS_LIMIT_DEG      8.0f
-#define VISION_IMU_RATE_LIMIT_DPS      720.0f
-#define VISION_IMU_RATE_EPS_DPS        0.001f
-#define VISION_IMU_MIN_CORNER_BLEND    0.08f
-#define VISION_IMU_DT_MIN_MS           1U
-#define VISION_IMU_DT_MAX_MS           40U
+// ============================================================
+//  IMU卡尔曼滤波参数
+// ============================================================
+#define VISION_IMU_KALMAN_ANGLE_Q      0.002f  // 角度过程噪声协方差Q，角度预测的信任度
+                                                // 调大：更信任预测，响应更快但滤波效果弱
+                                                // 调小：更信任测量，滤波更强但延迟大
+#define VISION_IMU_KALMAN_RATE_Q       0.10f   // 角速度过程噪声协方差Q，角速度预测的信任度
+                                                // 调大：更信任角速度预测，响应更快
+                                                // 调小：更信任测量，滤波更强
+#define VISION_IMU_KALMAN_BIAS_Q       0.00008f // 零偏过程噪声协方差Q，零偏估计的信任度
+                                                // 调大：零偏估计更新更快，跟踪漂移能力强
+                                                // 调小：零偏估计更稳定，但跟踪漂移慢
+#define VISION_IMU_KALMAN_MEAS_R       0.90f   // 测量噪声协方差R，传感器测量数据的信任度
+                                                // 调大：更不信任测量，滤波更强但延迟大
+                                                // 调小：更信任测量，响应更快但噪声多
+#define VISION_IMU_KALMAN_RATE_DECAY   0.996f  // 角速度衰减系数，角速度的自然衰减因子
+                                                // 调大：衰减更慢，角速度保持更久
+                                                // 调小：衰减更快，角速度归零更快
+#define VISION_IMU_KALMAN_Q            VISION_IMU_KALMAN_ANGLE_Q // 卡尔曼滤波Q值(默认使用角度Q)
+#define VISION_IMU_KALMAN_R            VISION_IMU_KALMAN_MEAS_R  // 卡尔曼滤波R值(默认使用测量R)
 
-/* Laser trigger */
-#define VISION_LASER_THRESHOLD_PX      30
-#define VISION_LASER_HOLD_FRAMES       3
+// ============================================================
+//  IMU限制参数
+// ============================================================
+#define VISION_IMU_DELTA_LIMIT_DEG     3.0f    // IMU角度增量限制(度)，单次角度变化的最大值
+                                                // 调大：允许更大角度变化，响应快但易受干扰
+                                                // 调小：角度变化更平缓，更稳定但响应慢
+#define VISION_IMU_BIAS_LIMIT_DEG      8.0f    // IMU零偏限制(度)，零偏估计的最大范围
+                                                // 调大：零偏估计范围更大，适应能力强
+                                                // 调小：零偏估计范围更小，更稳定
+#define VISION_IMU_RATE_LIMIT_DPS      720.0f  // IMU角速度限制(度/秒)，角速度的最大值限制
+#define VISION_IMU_RATE_EPS_DPS        0.001f  // IMU角速度最小值(度/秒)，低于此值视为0
+#define VISION_IMU_MIN_CORNER_BLEND    0.08f   // 最小转角混合系数，角落处的最小混合比例
+#define VISION_IMU_DT_MIN_MS           1U      // IMU最小采样周期(ms)，两次采样的最小时间间隔
+#define VISION_IMU_DT_MAX_MS           40U     // IMU最大采样周期(ms)，两次采样的最大时间间隔
 
-/* Runtime motor speed */
-#define VISION_GIMBAL_RPM_MIN          20.0f
-#define VISION_GIMBAL_RPM_MAX          120.0f
-#define VISION_GIMBAL_RPM_SLEW         0.25f
-#define VISION_CORNER_RPM_REDUCE       0.35f
+// ============================================================
+//  激光触发参数
+// ============================================================
+#define VISION_LASER_THRESHOLD_PX      30      // 激光触发阈值(像素)，目标中心与图像中心的偏差小于此值时触发激光
+                                                // 调大：触发条件更宽松，更容易触发但精度低
+                                                // 调小：触发条件更严格，精度更高但难触发
+#define VISION_LASER_HOLD_FRAMES       3       // 激光保持帧数，满足触发条件后持续多少帧才触发
+                                                // 调大：抗干扰能力强，误触少但触发延迟大
+                                                // 调小：触发更快，但易受干扰误触发
 
-/* Circle scan */
-#define VISION_CIRCLE_RADIUS_PX        26.0f
-#define VISION_CIRCLE_STEP_RAD         0.12f
+// ============================================================
+//  运行时电机速度参数
+// ============================================================
+#define VISION_GIMBAL_RPM_MIN          20.0f   // 云台最低转速(RPM)，电机运行的最低速度
+                                                // 调大：最低速度更高，响应快但低速不稳
+                                                // 调小：最低速度更低，更平稳但响应慢
+#define VISION_GIMBAL_RPM_MAX          120.0f  // 云台最高转速(RPM)，电机运行的最高速度
+                                                // 调大：最大速度更高，快速跟踪能力强
+                                                // 调小：最大速度更低，更平稳但跟踪慢
+#define VISION_GIMBAL_RPM_SLEW         0.25f   // 转速变化率，转速调整的快慢
+                                                // 调大：转速变化更快，响应更灵敏
+                                                // 调小：转速变化更缓，更平滑稳定
+#define VISION_CORNER_RPM_REDUCE       0.35f   // 角落转速降低比例，检测到角落时降低的转速比例
+                                                // 调大：角落减速更多，更稳但速度慢
+                                                // 调小：角落减速更少，速度快但易丢失目标
 
-/* ROI scan strategy */
-#define VISION_SCAN_X_MIN              (-30.0f)
-#define VISION_SCAN_X_MAX              ( 30.0f)
-#define VISION_SCAN_Y_MIN              (-15.0f)
-#define VISION_SCAN_Y_MAX              ( 15.0f)
-#define VISION_SCAN_SPEED              (5.0f)
+// ============================================================
+//  圆形扫描参数
+// ============================================================
+#define VISION_CIRCLE_RADIUS_PX        26.0f   // 圆形扫描半径(像素)，圆周运动的半径大小
+                                                // 调大：扫描范围更大，覆盖区域广
+                                                // 调小：扫描范围更小，更精确
+#define VISION_CIRCLE_STEP_RAD         0.12f   // 圆形扫描步长(弧度)，每步转动的角度
+                                                // 调大：步长更大，扫描更快但精度低
+                                                // 调小：步长更小，扫描更慢但更精细
 
-#define VISION_LOCK_FRAMES             5
-#define VISION_LOSE_FRAMES             10
-#define VISION_FULL_FRAMES             30
-#define VISION_SCAN_INTERVAL_MS        200
+// ============================================================
+//  ROI扫描策略参数
+// ============================================================
+#define VISION_SCAN_X_MIN              (-30.0f) // 扫描X轴最小值(度)，蛇形扫描的左边界
+#define VISION_SCAN_X_MAX              ( 30.0f) // 扫描X轴最大值(度)，蛇形扫描的右边界
+#define VISION_SCAN_Y_MIN              (-15.0f) // 扫描Y轴最小值(度)，蛇形扫描的下边界
+#define VISION_SCAN_Y_MAX              ( 15.0f) // 扫描Y轴最大值(度)，蛇形扫描的上边界
+#define VISION_SCAN_SPEED              (5.0f)   // 扫描速度(度/秒)，蛇形扫描的运动速度
+                                                 // 调大：扫描更快，覆盖范围大但易错过目标
+                                                 // 调小：扫描更慢，更易发现目标但耗时长
+
+// ============================================================
+//  目标锁定/丢失状态机参数
+// ============================================================
+#define VISION_LOCK_FRAMES             5       // 锁定帧数，连续检测到目标多少帧后进入锁定状态
+                                                // 调大：锁定更可靠，误锁少但锁定慢
+                                                // 调小：锁定更快，但易受干扰误锁定
+#define VISION_LOSE_FRAMES             10      // 丢失帧数，连续未检测到目标多少帧后进入丢失状态
+                                                // 调大：更不容易丢失目标，但目标真丢了反应慢
+                                                // 调小：丢失检测更快，但短暂遮挡就丢目标
+#define VISION_FULL_FRAMES             30      // 全图帧数，丢失后多少帧切换到全图搜索
+                                                // 调大：小ROI搜索时间更长，找回快但范围小
+                                                // 调小：更快切换到全图，搜索范围大但慢
+#define VISION_SCAN_INTERVAL_MS        200     // 扫描间隔(ms)，蛇形扫描的动作间隔时间
+                                                // 调大：扫描动作更慢，更稳定
+                                                // 调小：扫描动作更快，搜索更高效
 
 #endif
