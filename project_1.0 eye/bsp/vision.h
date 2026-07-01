@@ -25,6 +25,7 @@ void Vision_GimbalPID_Update(float error_x_px, float error_y_px);
 // 清空视觉PID积分项
 void Vision_GimbalPID_ClearIntegral(void);
 // IMU补偿定时调用，丢包时维持补偿
+void Vision_IMUFeedforward1kTick(void);
 void Vision_GimbalIMUCompensationTick(void);
 // 获取云台PID控制器指针，返回双轴PID结构体指针
 GimbalDualPID_t* Vision_GimbalPID_GetController(void);

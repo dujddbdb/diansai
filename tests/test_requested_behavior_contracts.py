@@ -42,16 +42,33 @@ class RequestedBehaviorContracts(unittest.TestCase):
         self.assertNotIn("GimbalDualPID_SetYawDelta(&s_gimbal_pid", vision_c)
         self.assertNotIn("GimbalDualPID_SetPitchDelta(&s_gimbal_pid", vision_c)
 
-    def test_k230_crop_center_comes_from_laser_offset(self):
+    def test_k230_crop_center_is_single_origin_calibration(self):
         main_py = read_project_text("k230", "main.py")
 
-        self.assertRegex(main_py, r"(?m)^LASER_OFFSET_X\s*=")
-        self.assertRegex(main_py, r"(?m)^LASER_OFFSET_Y\s*=")
-        self.assertIn("def laser_center_roi", main_py)
-        self.assertIn("CAM_W // 2 + LASER_OFFSET_X", main_py)
-        self.assertIn("CAM_H // 2 + LASER_OFFSET_Y", main_py)
-        self.assertIn("crop_roi = laser_center_roi()", main_py)
+        self.assertRegex(main_py, r"(?m)^IMG_W\s*=\s*320\b")
+        self.assertRegex(main_py, r"(?m)^IMG_H\s*=\s*240\b")
+        self.assertRegex(main_py, r"(?m)^CAM_W\s*=\s*1920\b")
+        self.assertRegex(main_py, r"(?m)^CAM_H\s*=\s*1080\b")
+        self.assertRegex(main_py, r"(?m)^CROP_CENTER_X\s*=\s*CAM_W // 2\b")
+        self.assertRegex(main_py, r"(?m)^CROP_CENTER_Y\s*=\s*CAM_H // 2 - 77\b")
+        self.assertIn("def detection_center_roi", main_py)
+        self.assertIn("ORIGIN_X = IMG_W // 2", main_py)
+        self.assertIn("ORIGIN_Y = IMG_H // 2", main_py)
+        self.assertIn("crop_roi = detection_center_roi()", main_py)
+        self.assertNotIn("LASER_OFFSET_X", main_py)
+        self.assertNotIn("LASER_OFFSET_Y", main_py)
         self.assertNotIn("crop_x = LASER_BIG_X - IMG_W // 2", main_py)
+
+    def test_k230_has_simple_kalman_variant(self):
+        kalman_py = read_project_text("k230", "main_kalman.py")
+
+        self.assertIn("class TargetKalman", kalman_py)
+        self.assertIn("IMG_W = 320", kalman_py)
+        self.assertIn("IMG_H = 240", kalman_py)
+        self.assertIn("CAM_W = 1920", kalman_py)
+        self.assertIn("CAM_H = 1080", kalman_py)
+        self.assertIn("return bytes((err_y >> 8, err_y & 0xFF,", kalman_py)
+        self.assertIn("view = frame.copy(roi=detection_center_roi())", kalman_py)
 
 
 if __name__ == "__main__":

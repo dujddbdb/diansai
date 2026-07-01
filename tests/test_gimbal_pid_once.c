@@ -75,6 +75,7 @@ void GimbalDualPID_SetIMUFeedforward(GimbalDualPID_t *dual_pid,
                                      float yaw_rate,
                                      float pitch_rate,
                                      float dt_s);
+void GimbalDualPID_UpdateFeedforward(GimbalDualPID_t *dual_pid);
 
 static uint32_t last_x_pulses;
 void StepperXOY_Position(uint8_t addr, uint8_t dir, uint16_t rpm,
@@ -112,7 +113,16 @@ int main(void)
     }
     assert(last_x_pulses == 0U);
 
+    pid.x_axis.last_output = 1.25f;
+    pid.x_axis.output = 1.25f;
+    GimbalDualPID_SetIMUDelta(&pid, 1.0f, 0.0f);
+    GimbalDualPID_UpdateFeedforward(&pid);
+    assert(last_x_pulses == 8U);
+    assert(pid.x_axis.last_output == 1.25f);
+    assert(pid.x_axis.output == 1.25f);
+
     /* A one-pixel residual must not become endless relative-position moves. */
+    last_x_pulses = 0U;
     pid.x_axis.integral = 1.0f;
     pid.x_axis.last_output = 0.5f;
     GimbalDualPID_Update(&pid, 1.0f, 0.0f);

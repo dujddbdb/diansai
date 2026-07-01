@@ -55,6 +55,7 @@ void GimbalPID_Init(GimbalPID_t *pid, float output_max, uint8_t motor_addr);
 void GimbalDualPID_Init(GimbalDualPID_t *dual_pid);
 float GimbalPID_Calculate(GimbalPID_t *pid, float error_px);
 void GimbalDualPID_Update(GimbalDualPID_t *dual_pid, float error_x_px, float error_y_px);
+void GimbalDualPID_UpdateFeedforward(GimbalDualPID_t *dual_pid);
 void GimbalPID_ClearIntegral(GimbalPID_t *pid);
 void GimbalDualPID_ClearIntegral(GimbalDualPID_t *dual_pid);
 void GimbalPID_SetParams(GimbalPID_t *pid,

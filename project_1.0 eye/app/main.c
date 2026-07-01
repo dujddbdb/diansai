@@ -42,9 +42,23 @@
  * @note   初始化顺序: 板级 → 调试串口 → 外设 → 电机 → 传感器 → 视觉
  *         主循环频率: 100Hz (由视觉模块调度)
  */
+static uint8_t Eye_WaitForIMUData(void)
+{
+    while (1) {
+        BNO080_I2C_Init();
+        if (bno080_init()) {
+            USART3_SendString("[EYE] BNO080 first frame ready\r\n");
+            return 1U;
+        }
+        USART3_SendString("[EYE] waiting BNO080 first frame...\r\n");
+        delay_ms(100U);
+    }
+}
+
 int main(void)
 {
     uint8_t imu_ready;                  // IMU初始化状态标志
+    uint32_t last_imu_ms = 0U;
     uint32_t last_vision_ms = 0U;
 
     /* ---- 第一阶段: 板级初始化 ---- */
@@ -70,8 +84,7 @@ int main(void)
     UART5_Init(EYE_UART5_BAUD);         // 初始化UART5 (115200bps, K230坐标数据接收)
 
     /* ---- 第六阶段: BNO080 IMU初始化 (I2C1) ---- */
-    BNO080_I2C_Init();                  // 初始化I2C1引脚 (PB8=SCL, PB9=SDA)
-    imu_ready = bno080_init();          // 初始化BNO080, 获取初始化状态
+    imu_ready = Eye_WaitForIMUData();   // 等到BNO080首帧数据后才进入主循环
 
     /* ---- 第七阶段: 视觉系统初始化 ---- */
     Vision_Init();                      // 初始化视觉模块 (解析K230数据/靶心追踪/激光触发)
@@ -79,8 +92,12 @@ int main(void)
     /* ---- 主循环: 100Hz视觉追踪调度 ---- */
     while (1) {
         uint32_t now_ms = HAL_GetTick();
+        if ((uint32_t)(now_ms - last_imu_ms) >= VISION_IMU_FEEDFORWARD_PERIOD_MS) {
+            last_imu_ms = now_ms;
+            Vision_GimbalIMUCompensationTick();
+        }
         (void)imu_ready;
-        if ((uint32_t)(now_ms - last_vision_ms) < 5U) {
+        if ((uint32_t)(now_ms - last_vision_ms) < VISION_CONTROL_PERIOD_MS) {
             continue;
         }
         last_vision_ms = now_ms;

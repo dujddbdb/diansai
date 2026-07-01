@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-K230 靶心识别 + LCD显示 + UART3发送 (放大画面版)
-==============================================
-修改点:
-1. 检测分辨率从 320x240 放大到 640x480，LCD显示画面大一倍
-2. 裁剪中心对准原ORIGIN_Y=55对应的激光物理位置，激光点落在裁剪画面正中心
-3. 同步放大面积阈值、ROI追踪边距等像素参数，保证检测逻辑正常
+K230 target detection + LCD preview + UART3 raw tracking output.
+
+The sensor captures full 1080p frames. Detection runs on a 320x240
+crop centered on the calibrated full-frame laser/origin point.
 """
 
 import gc
@@ -66,16 +64,16 @@ except ImportError:
 # 用户可调参数区 (已放大适配640x480)
 # ============================================================
 # 图像与通信
-IMG_W = 300
-IMG_H = 300
+IMG_W = 320
+IMG_H = 240
 CAM_W = 1920
 CAM_H = 1080
 CAM_FPS = 60
 UART_BAUD = 115200
 
-# 激光点在1080P大图中的物理坐标 (由原320x240中心裁剪时ORIGIN_Y=55换算得到)
-LASER_OFFSET_X = 0
-LASER_OFFSET_Y = -77
+# Full-frame crop center, already including the laser/origin calibration.
+CROP_CENTER_X = CAM_W // 2
+CROP_CENTER_Y = CAM_H // 2 - 77
 
 # 显示模式
 HEADLESS = False
@@ -132,7 +130,7 @@ OUTPUT_HOLD_FRAMES = 2
 
 # 原点校准 (裁剪后激光点在画面正中心)
 ORIGIN_X = IMG_W // 2
-ORIGIN_Y = 160
+ORIGIN_Y = IMG_H // 2
 TARGET_PLANE_U = 0.500
 TARGET_PLANE_V = 0.500
 
@@ -157,11 +155,9 @@ def roi_clip(x, y, w, h, img_w=IMG_W, img_h=IMG_H):
     h = int(clamp(h, 1, img_h - y))
     return (x, y, w, h)
 
-def laser_center_roi():
-    laser_x = CAM_W // 2 + LASER_OFFSET_X
-    laser_y = CAM_H // 2 + LASER_OFFSET_Y
-    return roi_clip(laser_x - IMG_W // 2,
-                    laser_y - IMG_H // 2,
+def detection_center_roi():
+    return roi_clip(CROP_CENTER_X - IMG_W // 2,
+                    CROP_CENTER_Y - IMG_H // 2,
                     IMG_W,
                     IMG_H,
                     CAM_W,
@@ -823,7 +819,7 @@ try:
         img = sensor.snapshot()
 
         # ===== 以激光点为中心裁剪检测画面 =====
-        crop_roi = laser_center_roi()
+        crop_roi = detection_center_roi()
         view = img.copy(roi=crop_roi)
 
         if pixfmt == "GRAYSCALE":
