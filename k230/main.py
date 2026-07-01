@@ -74,6 +74,9 @@ UART_BAUD = 115200
 # Full-frame crop center, already including the laser/origin calibration.
 CROP_CENTER_X = CAM_W // 2
 CROP_CENTER_Y = CAM_H // 2 - 77
+CROP_X = max(0, min(CAM_W - IMG_W, CROP_CENTER_X - IMG_W // 2))
+CROP_Y = max(0, min(CAM_H - IMG_H, CROP_CENTER_Y - IMG_H // 2))
+CROP_ROI = (CROP_X, CROP_Y, IMG_W, IMG_H)
 
 # 显示模式
 HEADLESS = False
@@ -129,8 +132,8 @@ OUTPUT_SMOOTH_DEN = 5
 OUTPUT_HOLD_FRAMES = 2
 
 # 原点校准 (裁剪后激光点在画面正中心)
-ORIGIN_X = IMG_W // 2
-ORIGIN_Y = IMG_H // 2
+ORIGIN_X = CROP_CENTER_X - CROP_X
+ORIGIN_Y = CROP_CENTER_Y - CROP_Y
 TARGET_PLANE_U = 0.500
 TARGET_PLANE_V = 0.500
 
@@ -156,12 +159,7 @@ def roi_clip(x, y, w, h, img_w=IMG_W, img_h=IMG_H):
     return (x, y, w, h)
 
 def detection_center_roi():
-    return roi_clip(CROP_CENTER_X - IMG_W // 2,
-                    CROP_CENTER_Y - IMG_H // 2,
-                    IMG_W,
-                    IMG_H,
-                    CAM_W,
-                    CAM_H)
+    return CROP_ROI
 
 def corners_to_box(corners, margin=0):
     xs = [p[0] for p in corners]
@@ -565,8 +563,8 @@ class FastRectangleTracker:
                 score += max(0.0, 18.0 - dist * 0.18)
                 score -= ar * 18.0
             else:
-                center_penalty = (abs(cx - IMG_W // 2) +
-                                  abs(cy - IMG_H // 2)) * 0.01
+                center_penalty = (abs(cx - ORIGIN_X) +
+                                  abs(cy - ORIGIN_Y)) * 0.01
                 score -= center_penalty
             if score > best_score:
                 best_score = score

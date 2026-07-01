@@ -27,8 +27,11 @@ UART_BAUD = 115200
 
 CROP_CENTER_X = CAM_W // 2
 CROP_CENTER_Y = CAM_H // 2 - 77
-ORIGIN_X = IMG_W // 2
-ORIGIN_Y = IMG_H // 2
+CROP_X = max(0, min(CAM_W - IMG_W, CROP_CENTER_X - IMG_W // 2))
+CROP_Y = max(0, min(CAM_H - IMG_H, CROP_CENTER_Y - IMG_H // 2))
+CROP_ROI = (CROP_X, CROP_Y, IMG_W, IMG_H)
+ORIGIN_X = CROP_CENTER_X - CROP_X
+ORIGIN_Y = CROP_CENTER_Y - CROP_Y
 
 HEADLESS = False
 SHOW_TO_IDE = False
@@ -61,9 +64,7 @@ def roi_clip(x, y, w, h, img_w=IMG_W, img_h=IMG_H):
 
 
 def detection_center_roi():
-    return roi_clip(CROP_CENTER_X - IMG_W // 2,
-                    CROP_CENTER_Y - IMG_H // 2,
-                    IMG_W, IMG_H, CAM_W, CAM_H)
+    return CROP_ROI
 
 
 def pack_error_packet(err_y, err_z):
