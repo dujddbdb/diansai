@@ -30,6 +30,14 @@ class BnoPolicyTest(unittest.TestCase):
         self.assertLessEqual(value, 5)
         self.assertIn("BNO080_EXECUTABLE_RESET_COMPLETE", text)
 
+    def test_both_imus_require_first_data_before_init_success(self):
+        for source in (SOURCE, EYE_SOURCE):
+            text = source.read_text(encoding="utf-8", errors="replace")
+            init = text[text.index("uint8_t bno080_init(void)"):text.index("uint8_t bno080_update(void)")]
+            self.assertIn("if (g_bno080.new_data)", init)
+            self.assertIn("g_bno080.new_data = 0", init)
+            self.assertRegex(init, r"return\s+0;\s*}")
+
 
 if __name__ == "__main__":
     unittest.main()

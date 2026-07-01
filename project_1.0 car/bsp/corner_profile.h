@@ -6,9 +6,7 @@
 // 返回值: 限制后的值
 static inline float CornerProfile_Clamp01(float value)
 {
-    // 小于0则取0
     if (value < 0.0f) return 0.0f;
-    // 大于1则取1
     if (value > 1.0f) return 1.0f;
     return value;
 }
@@ -18,9 +16,7 @@ static inline float CornerProfile_Clamp01(float value)
 // 返回值: 平滑输出值∈[0,1]
 static inline float CornerProfile_Smoothstep5(float progress)
 {
-    // 先限制到[0,1]范围
     float u = CornerProfile_Clamp01(progress);
-    // 五次多项式：6u^5 - 15u^4 + 10u^3
     return u * u * u * (u * (u * 6.0f - 15.0f) + 10.0f);
 }
 
@@ -31,15 +27,10 @@ static inline float CornerProfile_Smoothstep5(float progress)
 // 返回值: 向目标靠近但不超过max_step速率的新值
 static inline float CornerProfile_Slew(float current, float target, float max_step)
 {
-    // 计算差值
     float delta = target - current;
-    // 确保max_step为正
     if (max_step < 0.0f) max_step = -max_step;
-    // 正超调：按最大步长增加
     if (delta > max_step) return current + max_step;
-    // 负超调：按最大步长减少
     if (delta < -max_step) return current - max_step;
-    // 差值在步长内，直接到目标
     return target;
 }
 
