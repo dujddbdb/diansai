@@ -1,3 +1,6 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system"
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python.analysis.extraPaths": [
+        "C:\\Users\\wanji\\.kendryte\\k230_canmv_stubs\\37ff32d9e8576f8766a045ce67cfabbf522361dd"
+    ]
 }

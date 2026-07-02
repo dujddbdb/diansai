@@ -34,7 +34,7 @@ ORIGIN_Y = IMG_H // 2  # 原点Y坐标(裁剪图像坐标系)
 
 # 显示模式
 HEADLESS = False          # 无头模式，True则不初始化LCD显示
-SHOW_TO_IDE = False       # 是否输出图像到IDE预览
+SHOW_TO_IDE = True        # 是否输出图像到IDE预览
 SENSOR_PIXFORMAT = "GRAYSCALE"  # 传感器像素格式
 DISPLAY_EVERY_N = 3       # 每N帧刷新一次显示，调大则显示帧率低但节省CPU
 
@@ -239,7 +239,7 @@ class TargetKalman:
 
         # 丢失3帧内仍输出预测值，超过则输出无效
         if self.x.valid and self.y.valid and self.lost <= 3:
-            return int(self.x.x + 0.5), int(self.y.y + 0.5), True
+            return int(self.x.x + 0.5), int(self.y.x + 0.5), True
         return -1, -1, False
 
 
