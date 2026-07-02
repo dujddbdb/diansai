@@ -21,8 +21,8 @@ class CarTrackingDirectionTest(unittest.TestCase):
         source = (ROOT / "project_1.0 car" / "bsp" / "track.c").read_text(
             encoding="utf-8", errors="ignore"
         )
-        phase1_start = source.index("if (is_right_angle == 0 && right_angle_phase <= 1U")
-        phase2_start = source.index("else if (is_right_angle != 0 && right_angle_phase == 2)")
+        phase1_start = source.index("if (is_right_angle == 0 && right_angle_phase == 0U)")
+        phase2_start = source.index("else if (is_right_angle != 0 && right_angle_phase == 2U)")
         phase1 = source[phase1_start:phase2_start]
         self.assertIn("RightAngleDetector_AllWhite", phase1)
         self.assertIn("RightAngleDetector_WhiteConfirmed", phase1)

@@ -33,23 +33,22 @@ static void Car_OLEDShowTargetLap(void)
     OLED_Refresh();
 }
 
-// 按键控制处理：启动/停止/增减目标圈数
+// Key controls: start/stop and target lap adjustment.
 static void Car_KeyControlTick(void)
 {
-    // 按键0：启动控制
-    if (Key_GetState(0U) == KEY_PRESS) {
+    uint8_t key = Key_GetTriggered();
+
+    if (key == 0xFFU) {
+        return;
+    }
+
+    if (key == 0U) {
         Track_ControlStart();
-    }
-    // 按键1：停止控制
-    if (Key_GetState(1U) == KEY_PRESS) {
+    } else if (key == 1U) {
         Track_ControlStop();
-    }
-    // 按键2：增加目标圈数
-    if (Key_GetState(2U) == KEY_PRESS) {
+    } else if (key == 2U) {
         Track_TargetLapAdd();
-    }
-    // 按键3：减少目标圈数
-    if (Key_GetState(3U) == KEY_PRESS) {
+    } else if (key == 3U) {
         Track_TargetLapSub();
     }
 }
@@ -106,19 +105,6 @@ int main(void)
 
         // ----- 调试输出 -----
         // 串口调试输出，用于查看传感器数值
-        Track_Main_Debug(100);
-
-        // ----- 系统状态指示 -----
-        // IMU有数据时点亮LED/关闭继电器，无数据时熄灭LED/吸合继电器
-        if (gyro_yaw_available) 
-        {
-            ExtLED_On();
-            Relay_Off();
-        }
-        else
-        {
-            ExtLED_Off();
-            Relay_On();
-        }					
+//        Track_Main_Debug(100);
     }
 }

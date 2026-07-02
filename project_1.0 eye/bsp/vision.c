@@ -82,32 +82,6 @@ static float Vision_WrapAngleDeltaDeg(float now_deg, float last_deg)
     return delta;
 }
 
-// IMU角度卡尔曼滤波更新函数(简化版)
-static float Vision_AngleKalmanUpdate(Vision_AngleKalman_t *kf, float measurement_deg)
-{
-    float k;
-
-    // 首次测量直接初始化滤波器状态
-    if (!kf->valid) {
-        kf->angle = measurement_deg;
-        kf->p = 1.0f;
-        kf->valid = 1U;
-        return measurement_deg;
-    }
-
-    // 预测阶段: 测量值绕回处理后，协方差P += 过程噪声Q
-    measurement_deg = kf->angle + Vision_WrapAngleDeltaDeg(measurement_deg, kf->angle);
-    kf->p += VISION_IMU_KALMAN_Q;
-    // 更新阶段: 计算卡尔曼增益 K = P / (P + R)
-    k = kf->p / (kf->p + VISION_IMU_KALMAN_R);
-    // 更新阶段: 估计值 = 预测值 + K * (测量值 - 预测值)
-    kf->angle += k * Vision_WrapAngleDeltaDeg(measurement_deg, kf->angle);
-    // 更新阶段: 协方差更新 P = (1 - K) * P
-    kf->p *= (1.0f - k);
-
-    return kf->angle;
-}
-
 // IMU角度卡尔曼滤波步进函数(完整版，三阶状态)
 static void Vision_AngleKalmanStep(Vision_AngleKalman_t *kf,
                                    float measurement_deg,
@@ -747,7 +721,12 @@ void Vision_Init(void)
 // 四种模式: 空闲/圆形扫描/追踪射击/追踪+圆形扫描
 void Vision_Process(void)
 {
+    static uint32_t last_packet_ms = 0U;
+    static uint8_t packet_seen = 0U;
+    static uint8_t stale_latched = 0U;
+    uint32_t now_ms = HAL_GetTick();
     uint8_t fresh_packet = 0U;
+    uint8_t packet_stale;
 
     // 系统未初始化直接返回
     if (!s_initialized) return;
@@ -758,8 +737,14 @@ void Vision_Process(void)
     if (k230_rx_flag) {
         K230_ParsePacket();
         fresh_packet = 1U;
+        last_packet_ms = now_ms;
+        packet_seen = 1U;
+        stale_latched = 0U;
     }
     s_last_fresh_packet = fresh_packet;
+    packet_stale = (!packet_seen ||
+                    (uint32_t)(now_ms - last_packet_ms) > VISION_K230_PACKET_TIMEOUT_MS)
+                 ? 1U : 0U;
 
     // 阶段3: 空闲模式 — 停止所有输出，仅保持IMU补偿
     if (s_eye_mode == VISION_MODE_IDLE) {
@@ -767,10 +752,11 @@ void Vision_Process(void)
         Vision_TargetProcess(0, 0, false);
         Vision_LaserTrigger(false);
         Tracking_Update(0U);
+        return;
     }
 
     // 阶段4: 收到新数据包且非空闲模式，执行核心控制逻辑
-    if (fresh_packet && s_eye_mode != VISION_MODE_IDLE) {
+    if (fresh_packet) {
         uint8_t target_valid = k230_parsed.track_valid ? 1U : 0U;
         float control_x = 0.0f;
         float control_y = 0.0f;
@@ -805,7 +791,22 @@ void Vision_Process(void)
                 VisionStrategy_GimbalScan();
             }
         }
-    } else if (!fresh_packet && s_eye_mode != VISION_MODE_IDLE && Vision_ModeCircles()) {
+    } else if (packet_stale) {
+        // K230超时: 清除旧目标，防止状态机卡住在上一次检测结果
+        Vision_TargetProcess(0, 0, false);
+        Vision_LaserTrigger(false);
+        Tracking_Update(0U);
+        if (!stale_latched) {
+            Vision_GimbalPID_ClearIntegral();
+            stale_latched = 1U;
+        }
+        if (VisionStrategy_GetROIState() == ROI_FULL) {
+            VisionStrategy_GimbalScan();
+        }
+        if (Vision_ModeCircles()) {
+            Vision_RunCircleOnly();
+        }
+    } else if (Vision_ModeCircles()) {
         // 无新数据包但圆形扫描模式: 继续执行圆形扫描
         Vision_RunCircleOnly();
     }

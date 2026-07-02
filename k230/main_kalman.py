@@ -22,6 +22,8 @@ CAM_W = 1920    # 摄像头全帧宽度(像素)
 CAM_H = 1080    # 摄像头全帧高度(像素)
 CAM_FPS = 60    # 摄像头帧率，调大则帧率高但CPU占用高
 UART_BAUD = 115200  # 串口波特率
+FULL_CHN = CAM_CHN_ID_0  # 摄像头完整输入通道，保持1920x1080
+DETECT_CHN = CAM_CHN_ID_1  # 硬件裁剪识别通道，输出320x240
 
 # 手动校准：调整全帧裁剪中心，直到真实激光点出现在320x240检测图像的中心
 CROP_CENTER_X = CAM_W // 2  # 裁剪区域中心X坐标(全帧坐标系)
@@ -33,16 +35,19 @@ ORIGIN_X = IMG_W // 2  # 原点X坐标(裁剪图像坐标系)
 ORIGIN_Y = IMG_H // 2  # 原点Y坐标(裁剪图像坐标系)
 
 # 显示模式
-HEADLESS = False          # 无头模式，True则不初始化LCD显示
-SHOW_TO_IDE = True        # 是否输出图像到IDE预览
+HEADLESS = True           # 无头模式，True则不初始化LCD显示
+SHOW_TO_IDE = False       # 是否输出图像到IDE预览
 SENSOR_PIXFORMAT = "GRAYSCALE"  # 传感器像素格式
-DISPLAY_EVERY_N = 3       # 每N帧刷新一次显示，调大则显示帧率低但节省CPU
+DISPLAY_EVERY_N = 12      # 每N帧刷新一次显示，调大则显示帧率低但节省CPU
 
 # 检测参数
-FIND_RECTS_THRESHOLD = 4500  # 矩形检测阈值，调大则检测更少但更精准
+FIND_RECTS_THRESHOLD = 9000  # 矩形检测阈值，调大则检测更少但更精准
+FIND_RECTS_FALLBACK_PERIOD = 30  # find_rects较慢，仅低频兜底
+BLOB_X_STRIDE = 3                # Blob水平步进，调大速度更快但细线更容易漏检
+BLOB_Y_STRIDE = 3                # Blob垂直步进，调大速度更快但细线更容易漏检
 BLACK_GRAY_TH = 95           # 黑色灰度阈值，调大则更多像素被判定为黑色
 OUTER_MIN_AREA = 700         # 外框最小面积(像素²)
-OUTER_MAX_AREA = 62000       # 外框最大面积(像素²)
+OUTER_MAX_AREA = 90000       # 外框最大面积(像素²)
 ASPECT_MIN = 0.55            # 最小宽高比
 ASPECT_MAX = 1.75            # 最大宽高比
 MAX_ASSOC_DIST = 80          # 最大关联距离(像素)，超过则认为是新目标
@@ -258,20 +263,24 @@ def valid_rect(rect):
     return ASPECT_MIN <= aspect <= ASPECT_MAX
 
 
-# 检测候选目标：使用多种方法检测矩形目标
-# 检测策略: find_rects -> blob检测
+# 检测候选目标：Blob快速热路径，find_rects低频兜底
 # 参数:
 #   gray: 灰度图像
 # 返回值: (cx, cy, rect, valid) 中心坐标、矩形、是否有效
-def detect_candidate(gray):
+def detect_candidate(gray, frame_id=0):
     best = None
     best_score = -1
 
-    # 方法1: 使用find_rects检测矩形
+    # 方法1: Blob快速检测，作为50FPS热路径
     try:
-        rects = gray.find_rects(threshold=FIND_RECTS_THRESHOLD)
-        for r in rects:
-            rect = r.rect()
+        blobs = gray.find_blobs([(0, BLACK_GRAY_TH)],
+                                x_stride=BLOB_X_STRIDE,
+                                y_stride=BLOB_Y_STRIDE,
+                                pixels_threshold=180,
+                                area_threshold=180,
+                                merge=True)
+        for b in blobs:
+            rect = b.rect()
             if not valid_rect(rect):
                 continue
             x, y, w, h = rect
@@ -282,16 +291,14 @@ def detect_candidate(gray):
     except Exception:
         pass
 
-    # 方法2: 回退到Blob检测
-    if best is None:
+    # 方法2: find_rects低频兜底
+    if (best is None and
+            (FIND_RECTS_FALLBACK_PERIOD <= 1 or
+             (frame_id % FIND_RECTS_FALLBACK_PERIOD) == 0)):
         try:
-            blobs = gray.find_blobs([(0, BLACK_GRAY_TH)],
-                                    x_stride=2, y_stride=2,
-                                    pixels_threshold=180,
-                                    area_threshold=180,
-                                    merge=True)
-            for b in blobs:
-                rect = b.rect()
+            rects = gray.find_rects(threshold=FIND_RECTS_THRESHOLD)
+            for r in rects:
+                rect = r.rect()
                 if not valid_rect(rect):
                     continue
                 x, y, w, h = rect
@@ -340,23 +347,30 @@ def init_camera():
     except TypeError:
         sensor = Sensor(width=CAM_W, height=CAM_H)
     sensor.reset()
-    sensor.set_framesize(width=CAM_W, height=CAM_H)
+    sensor.set_framesize(width=CAM_W, height=CAM_H, chn=FULL_CHN)
     # 根据显示模式配置像素格式
     if not HEADLESS:
-        sensor.set_pixformat(Sensor.RGB565)
+        sensor.set_pixformat(Sensor.RGB565, chn=FULL_CHN)
         pixfmt = "RGB565"
     elif SENSOR_PIXFORMAT == "RGB565":
-        sensor.set_pixformat(Sensor.RGB565)
+        sensor.set_pixformat(Sensor.RGB565, chn=FULL_CHN)
         pixfmt = "RGB565"
     else:
         # 尝试灰度格式，失败则回退到RGB565
         try:
-            sensor.set_pixformat(Sensor.GRAYSCALE)
+            sensor.set_pixformat(Sensor.GRAYSCALE, chn=FULL_CHN)
             pixfmt = "GRAYSCALE"
         except Exception:
-            sensor.set_pixformat(Sensor.RGB565)
+            sensor.set_pixformat(Sensor.RGB565, chn=FULL_CHN)
             pixfmt = "RGB565"
-    return sensor, pixfmt
+
+    try:
+        sensor.set_framesize(width=IMG_W, height=IMG_H,
+                             chn=DETECT_CHN, crop=CROP_ROI)
+        sensor.set_pixformat(Sensor.GRAYSCALE, chn=DETECT_CHN)
+        return sensor, "GRAYSCALE", DETECT_CHN, True
+    except Exception:
+        return sensor, pixfmt, FULL_CHN, False
 
 
 # 绘制叠加层：原点标记、目标框、误差信息、FPS等
@@ -398,7 +412,7 @@ has_display = False
 try:
     # ===== 硬件初始化 =====
     uart = init_uart()
-    sensor, pixfmt = init_camera()
+    sensor, pixfmt, detect_chn, sensor_crop_enabled = init_camera()
 
     # 初始化LCD显示
     if not HEADLESS:
@@ -416,19 +430,24 @@ try:
     clock = time.clock()
     display_count = 0
     gc_count = 0
+    frame_id = 0
 
     # ===== 主循环 =====
     while True:
         clock.tick()
         os.exitpoint()
-        frame = sensor.snapshot()
-        # 裁剪检测区域
-        view = frame.copy(roi=detection_center_roi())
+        frame_id += 1
+        frame = sensor.snapshot(chn=detect_chn)
+        # 优先使用K230传感器输出通道硬件裁剪；旧固件失败时保留软件裁剪兜底
+        if sensor_crop_enabled:
+            view = frame
+        else:
+            view = frame.copy(roi=detection_center_roi())
         # 转换为灰度图
         gray = view if pixfmt == "GRAYSCALE" else view.to_grayscale(copy=True)
 
         # 检测候选目标
-        mx, my, rect, measured = detect_candidate(gray)
+        mx, my, rect, measured = detect_candidate(gray, frame_id)
         # 卡尔曼滤波更新
         tx, ty, valid = tracker.update(mx, my, measured)
         # 计算控制误差

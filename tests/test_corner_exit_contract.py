@@ -22,7 +22,8 @@ class CornerExitContractTest(unittest.TestCase):
             "KD_GYRO_STRAIGHT",
             "KP_CORNER_YAW",
             "CORNER_MAX_RPM",
-            "CORNER_ENTRY_BLEND_PROGRESS",
+            "CORNER_IMU_MID_DEG",
+            "CORNER_IMU_FORCE_MIN_SCALE",
             "CORNER_GRAY_BLEND_START_DEG",
             "CORNER_IMU_EXIT_DEG",
         ):
@@ -111,18 +112,28 @@ class CornerExitContractTest(unittest.TestCase):
         self.assertIn("gyro_corner_target_yaw = gyro_corner_start_yaw - CORNER_YAW_TARGET;", track)
         self.assertIn("gyro_corner_target_yaw = gyro_corner_start_yaw + CORNER_YAW_TARGET;", track)
 
-    def test_corner_exit_is_imu_angle_based_with_gray_handover(self):
+    def test_corner_exit_is_imu_angle_based_with_last_10deg_gray_handover(self):
         track = (ROOT / "project_1.0 car" / "bsp" / "track.c").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        config = (ROOT / "project_1.0 car" / "bsp" / "track_config.h").read_text(
             encoding="utf-8", errors="ignore"
         )
         check_start = track.index("void Track_Check_Right_Angle(void)")
         action_start = track.index("void Track_Action_Execute(void)")
+        check_phase2_start = track.index(
+            "else if (is_right_angle != 0 && right_angle_phase == 2U)",
+            check_start,
+        )
         check_phase3_start = track.index(
-            "else if (is_right_angle != 0 && right_angle_phase == 3)",
+            "else if (is_right_angle != 0 && right_angle_phase == 3U)",
             check_start,
         )
         check_phase3_end = track.index("void Track_PID_Calc", check_phase3_start)
+        check_phase2 = track[check_phase2_start:check_phase3_start]
         check_phase3 = track[check_phase3_start:check_phase3_end]
+        gray_helper = track[track.index("static float Track_Corner_GrayBlend"):
+                            track.index("// 向K230视觉模块发送", track.index("static float Track_Corner_GrayBlend"))]
         action_corner_start = track.index(
             "(right_angle_phase == 2U || right_angle_phase == 3U)",
             action_start,
@@ -132,10 +143,19 @@ class CornerExitContractTest(unittest.TestCase):
         self.assertNotIn("gray_corner_diff_smooth", check_phase3 + action_corner)
         self.assertNotIn("RightAngleDetector_AllWhite", check_phase3)
         self.assertNotIn("right_angle_exit_gray_hits", check_phase3 + action_corner)
+        self.assertIn("#define CORNER_GRAY_BLEND_START_DEG   75.0f", config)
+        self.assertIn("#define CORNER_IMU_EXIT_DEG           85.0f", config)
+        self.assertIn("if (yaw_diff >= CORNER_GRAY_BLEND_START_DEG)", check_phase2)
         self.assertIn("CORNER_IMU_EXIT_DEG", check_phase3)
-        self.assertIn("CORNER_GRAY_BLEND_START_DEG", action_corner)
-        self.assertIn("gyro_diff *= entry * (1.0f - gray_blend);", action_corner)
-        self.assertIn("pid_correction = gray_blend * pid_smooth;", action_corner)
+        self.assertIn("CORNER_GRAY_BLEND_START_DEG", gray_helper)
+        self.assertIn("Track_Corner_Imu_ForceScale(yaw_diff)", action_corner)
+        self.assertIn("Track_Corner_GrayBlend(yaw_diff)", action_corner)
+        self.assertIn("gyro_diff *= force_scale * (1.0f - gray_blend);", action_corner)
+        self.assertIn("pid_correction = gray_blend * raw_pid;", action_corner)
+        self.assertIn("gyro_diff = f_clamp(gyro_diff, imu_diff_limit);", action_corner)
+        self.assertNotIn("CORNER_GYRO_DIFF_LIMIT_RPM", config + track)
+        self.assertNotIn("pid_smooth", config + track)
+        self.assertIn("Track_RegisterCornerComplete();", check_phase3)
 
     def test_eye_uses_k230_reported_error_directly(self):
         eye_main = (ROOT / "project_1.0 eye" / "app" / "main.c").read_text(
@@ -154,6 +174,21 @@ class CornerExitContractTest(unittest.TestCase):
         self.assertNotIn("GimbalDualPID_SetYawDelta(&s_gimbal_pid", vision)
         self.assertNotIn("GimbalDualPID_SetPitchDelta(&s_gimbal_pid", vision)
         self.assertNotIn("Vision_GimbalPID_Update", eye_main)
+
+    def test_eye_clears_stale_k230_packets_to_unstick_state_machine(self):
+        config = (ROOT / "project_1.0 eye" / "bsp" / "vision_config.h").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        vision = (ROOT / "project_1.0 eye" / "bsp" / "vision.c").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        process = vision[vision.index("void Vision_Process(void)"):]
+        self.assertIn("VISION_K230_PACKET_TIMEOUT_MS", config)
+        self.assertIn("packet_stale", process)
+        self.assertIn("Vision_TargetProcess(0, 0, false);", process)
+        self.assertIn("Vision_LaserTrigger(false);", process)
+        self.assertIn("Tracking_Update(0U);", process)
+        self.assertIn("Vision_GimbalPID_ClearIntegral();", process)
 
     def test_eye_imu_compensation_only_during_corner_execution(self):
         uart5 = (ROOT / "project_1.0 eye" / "bsp" / "uart" / "uart5.c").read_text(

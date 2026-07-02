@@ -41,10 +41,6 @@ float    err_filtered   = 0.0f;
 volatile float  Left_Base_RPM    = 0.0f;
 // 右轮基础目标转速（RPM），由上层控制算法给出
 volatile float  Right_Base_RPM   = 0.0f;
-// 当前基础转速（经斜坡平滑后的实际目标值）
-float           base_rpm_current = 0.0f;
-// 当前弯道最小转速
-float           corner_min_current = 0.0f;
 // 左轮最终PWM输出值（速度环输出）
 volatile int    Left_Final_PWM   = 0;
 // 右轮最终PWM输出值（速度环输出）
@@ -69,10 +65,6 @@ static uint8_t  is_in_corner    = 0;
 // 转弯角度进度（0~1，0=未开始，1=完成）
 static float    angle_progress  = 0.0f;
 
-// PID输出平滑值（一阶低通滤波）
-static float pid_smooth = 0.0f;
-// 弯道陀螺仪差速修正平滑值
-static float corner_gyro_diff_smooth = 0.0f;
 // 上一次目标基础转速（调试用）
 static float g_last_target_base = 0.0f;
 // 上一次陀螺仪差速修正值（调试用）
@@ -84,7 +76,7 @@ static float g_last_angle_progress = 0.0f;
 
 // 直角转弯检测结果（0=无，1=左转，2=右转）
 uint32_t is_right_angle              = 0;
-// 直角检测状态机当前阶段（0=空闲，1=预触发，2=陀螺仪转弯，3=灰度接管退出）
+// 直角检测状态机当前阶段（0=空闲，1=预触发，2=IMU主体，3=灰度渐变接管）
 uint32_t right_angle_phase           = 0;
 // 直角初始触发标志（特征首次确认时记录）
 uint32_t right_angle_initial_flag    = 0;
@@ -173,6 +165,14 @@ static inline float f_clamp(float val, float limit) {
     // 在范围内直接返回原值
     return val;
 }
+
+// 单位区间限幅函数：将val限制在[0, 1]范围内
+static inline float f_clamp01(float val) {
+    if (val > 1.0f) return 1.0f;
+    if (val < 0.0f) return 0.0f;
+    return val;
+}
+
 // 整型限幅函数：将val限制在[-limit, limit]范围内
 static inline int i_clamp(int val, int limit) {
     // 超过上限则返回上限
@@ -196,6 +196,42 @@ static float Track_Angle_Delta_Deg(float target, float current)
     while (delta < -180.0f) delta += 360.0f;
     // 返回归一化后的角度差
     return delta;
+}
+
+// IMU直角转弯力道包络：已转0/90度附近弱，45度附近最强
+static float Track_Corner_Imu_ForceScale(float turned_deg)
+{
+    float center = CORNER_IMU_MID_DEG;
+    float min_scale = f_clamp01(CORNER_IMU_FORCE_MIN_SCALE);
+    float x;
+    float envelope;
+
+    if (center <= 0.0f) {
+        return 1.0f;
+    }
+
+    if (turned_deg < 0.0f) {
+        turned_deg = -turned_deg;
+    }
+
+    x = (turned_deg - center) / center;
+    envelope = 1.0f - (x * x);
+    envelope = f_clamp01(envelope);
+
+    return min_scale + (1.0f - min_scale) * envelope;
+}
+
+// 最后10度灰度渐变接管：开始为0，退出角时为1
+static float Track_Corner_GrayBlend(float turned_deg)
+{
+    float width = CORNER_IMU_EXIT_DEG - CORNER_GRAY_BLEND_START_DEG;
+
+    if (width <= 0.0f) {
+        return 1.0f;
+    }
+
+    return CornerProfile_Smoothstep5(
+        (turned_deg - CORNER_GRAY_BLEND_START_DEG) / width);
 }
 
 // 向K230视觉模块发送当前转弯状态（状态变化时立即发送，转弯中周期发送）
@@ -278,12 +314,7 @@ static void Track_Reset_Control_State(void)
     PID_SumErr = 0.0f;
     PID_Output = 0;
     pid_filtered_output = 0.0f;
-    pid_smooth = 0.0f;
     err_filtered = 0.0f;
-    // 复位弯道相关平滑变量
-    corner_gyro_diff_smooth = 0.0f;
-    base_rpm_current = 0.0f;
-    corner_min_current = 0.0f;
     // 复位调试用历史变量
     g_last_target_base = 0.0f;
     g_last_gyro_diff = 0.0f;
@@ -537,139 +568,86 @@ int32_t Track_Calc_Err(void)
     return raw_err;
 }
 
-// 直角检测状态机：检测直角弯道特征并控制转弯过程
-// 状态流程：空闲检测(phase 0) → 预触发等待(phase 1) → 陀螺仪转弯(phase 2) → 灰度接管退出(phase 3)
+// 直角检测状态机：检测直角入口并按IMU角度推进转弯过程
+// 流程：特征锁定 → 全白入口 → IMU主体 → 最后10度灰度渐变 → 85度提前退出
 void Track_Check_Right_Angle(void)
 {
-    // 抑制未使用变量警告（这些变量为调试/未来功能预留，当前版本暂未使用）
-    (void)g_last_target_base;
-    (void)g_last_gyro_diff;
-    (void)g_last_pid_correction;
-    (void)g_last_angle_progress;
-
     // ==============================================
-    // phase 0/预检测阶段：空闲等待，持续检测直角特征信号
-    // 条件：当前未在转弯中，且状态机处于空闲或刚触发状态
+    // phase 0: 空闲检测，锁定直角方向
     // ==============================================
-    if (is_right_angle == 0 && right_angle_phase <= 1U)
+    if (is_right_angle == 0 && right_angle_phase == 0U)
     {
-        // 从直角检测器获取已确认的特征（左转/右转）
         uint8_t feature = RightAngleDetector_ConfirmedFeature(&right_angle_detector);
-        // 检测到有效直角特征时
+
         if (feature != 0U) {
-            // 记录初始触发标志（左/右转类型）
             right_angle_initial_flag = feature;
-            // 保存检测类型
             right_angle_detect_type = feature;
-            // 从空闲态(phase 0)切换到预触发态(phase 1)
-            if (right_angle_phase == 0U) {
-                right_angle_phase = 1U;
-            }
+            right_angle_phase = 1U;
         }
     }
 
     // ==============================================
-    // phase 1: 预触发阶段
-    // 功能：等待车辆行驶到直角入口（灰度全白），确认后锁定陀螺仪起始角度并进入转弯
-    // 误触发处理：特征消失且未全白时复位，避免误检
+    // phase 1: 等待全白入口，随后锁定IMU起始角
     // ==============================================
-    if (right_angle_phase == 1U)
+    else if (is_right_angle == 0 && right_angle_phase == 1U)
     {
-        // 获取滤波后的当前特征
         uint8_t filtered_feature = RightAngleDetector_Feature(right_angle_filtered_bits);
 
-        // --- 进入转弯的条件判断 ---
-        // 条件1：已检测到初始特征
-        // 条件2：8路灰度全白（车辆已到达直角入口，黑线消失）
-        // 条件3：全白状态已持续确认（滤波防抖）
         if (right_angle_initial_flag != 0U &&
             RightAngleDetector_AllWhite(right_angle_filtered_bits) &&
             RightAngleDetector_WhiteConfirmed(&right_angle_detector)) {
-
-            // 正式确认转弯类型
-            right_angle_detect_type = right_angle_initial_flag;
-            // 置位直角转弯标志
             is_right_angle = right_angle_initial_flag;
-            // 切换到陀螺仪闭环转弯阶段(phase 2)
-            right_angle_phase = 2;
-            // 记录转弯起始时的陀螺仪偏航角
+            right_angle_detect_type = right_angle_initial_flag;
+            right_angle_phase = 2U;
             gyro_corner_start_yaw = gyro_yaw_deg;
-            // 根据左转/右转计算目标偏航角
-            if (is_right_angle == 1) {
-                // 左转：yaw角减小（减去目标角度）
+            if (is_right_angle == 1U) {
                 gyro_corner_target_yaw = gyro_corner_start_yaw - CORNER_YAW_TARGET;
             } else {
-                // 右转：yaw角增大（加上目标角度）
                 gyro_corner_target_yaw = gyro_corner_start_yaw + CORNER_YAW_TARGET;
             }
-        }
-        // --- 误触发复位判断 ---
-        // 条件：有初始特征但特征已消失，且灰度不是全白（说明不是真的直角入口）
-        else if (right_angle_initial_flag != 0U &&
+            is_in_corner = 1U;
+        } else if (right_angle_initial_flag != 0U &&
                    filtered_feature == 0U &&
                    !RightAngleDetector_AllWhite(right_angle_filtered_bits)) {
-            // 误触发，复位直角检测状态机
             Track_Reset_Right_Angle_State();
         }
     }
 
     // ==============================================
-    // phase 2: 陀螺仪闭环转弯阶段
-    // 功能：纯陀螺仪PD控制转向，不使用灰度传感器
-    // 结束条件：转过指定角度（灰度融合起始角），切换到灰度接管阶段
+    // phase 2: IMU二次PID主体，转到75度进入灰度渐变区
     // ==============================================
-    else if (is_right_angle != 0 && right_angle_phase == 2)
+    else if (is_right_angle != 0 && right_angle_phase == 2U)
     {
-        // 计算当前已转过的角度（与起始yaw的差值绝对值）
         float yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg,
                                                      gyro_corner_start_yaw));
 
-        // 已转到灰度融合起始角度，切换到灰度接管阶段(phase 3)
         if (yaw_diff >= CORNER_GRAY_BLEND_START_DEG) {
-            right_angle_phase = 3;
+            right_angle_phase = 3U;
         }
-
     }
 
     // ==============================================
-    // phase 3: 灰度接管退出阶段
-    // 功能：灰度传感器逐渐接管巡线，陀螺仪辅助
-    // 结束条件：转过退出角度，完成整个直角转弯，恢复正常巡线
+    // phase 3: 最后10度灰度渐变接管，85度提前退出
     // ==============================================
-    else if (is_right_angle != 0 && right_angle_phase == 3)
+    else if (is_right_angle != 0 && right_angle_phase == 3U)
     {
-        // 计算当前已转过的总角度
         float yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg,
                                                      gyro_corner_start_yaw));
 
-        // 未达到退出角度，继续保持转弯状态
         if (yaw_diff < CORNER_IMU_EXIT_DEG) {
             return;
         }
 
-        // --- 达到退出角度，完成直角转弯 ---
-        // 状态机回到空闲阶段
-        right_angle_phase = 0;
-        // 清除直角转弯标志
-        is_right_angle    = 0;
-
-        // 复位直角检测状态机的所有标志
         Track_Reset_Right_Angle_State();
+        RightAngleDetector_Init(&right_angle_detector);
+        right_angle_filtered_bits = 0xFFU;
 
-        // 复位转弯相关的滤波和积分项，防止残余影响直道行驶
-        corner_gyro_diff_smooth = 0.0f;
         Left_Integral     = 0.0f;
         Right_Integral    = 0.0f;
         Left_FilteredEnc  = 0.0f;
         Right_FilteredEnc = 0.0f;
 
-        // 弯道最小转速恢复为基础转速
-        corner_min_current = BASE_RPM;
-
-        // 清除弯道中标志
-        is_in_corner = 0;
-
-        // 注册一个弯道完成，更新弯道计数和圈数计数
+        is_in_corner = 0U;
         Track_RegisterCornerComplete();
     }
 }
@@ -707,8 +685,8 @@ void Track_PID_Calc(int32_t err)
     PID_LastErr = PID_Err;
 }
 
-// 动作执行器：根据当前状态（直道/预转弯/转弯中）合成左右轮目标转速
-// 综合PID修正、陀螺仪修正、速度曲线，输出最终的左右轮目标RPM
+// 动作执行器：根据当前状态（直道/预触发/转弯中）合成左右轮目标转速
+// 直角主体只用二次函数IMU PID，最后10度灰度渐变接管
 void Track_Action_Execute(void)
 {
     // --- 局部变量定义与初始化
@@ -721,106 +699,56 @@ void Track_Action_Execute(void)
     // PID输出转换为RPM单位（原始输出×0.1系数缩放）
     float raw_pid = (float)PID_Output * 0.1f;
 
-    // --- PID输出一阶低通平滑，减少控制量突变
-    pid_smooth += CORNER_PID_SMOOTH_ALPHA * (raw_pid - pid_smooth);
-    // 保存调试用的历史变量
-    g_last_target_base = BASE_RPM;
-    g_last_gyro_diff = 0.0f;
-    g_last_pid_correction = pid_smooth;
-    g_last_angle_progress = 0.0f;
-
     // ==============================================
-    // 状态分支1：预触发阶段（检测到直角特征，准备入弯）
-    // 功能：提前减速，为转弯做准备
+    // 状态分支：预触发，继续正常巡线，不额外减速
     // ==============================================
     if (right_angle_phase == 1U) {
-        // 还未正式入弯，弯道标志清零
         is_in_corner = 0U;
-        // 基础转速降低（预减速）
-        target_base = BASE_RPM - CORNER_PREVIEW_DECEL_RPM;
-        // 仍使用灰度PID修正方向
-        pid_correction = pid_smooth;
+        target_base = BASE_RPM;
+        gyro_diff = 0.0f;
+        pid_correction = raw_pid;
     }
 
     // ==============================================
-    // 状态分支2：转弯中（phase 2陀螺仪闭环 / phase 3灰度接管）
-    // 功能：陀螺仪PD控制转向，配合速度曲线，灰度逐渐接管
+    // 状态分支：转弯中（IMU PID二次包络 + 末段灰度渐变）
     // ==============================================
     else if (is_right_angle != 0 &&
-               (right_angle_phase == 2U || right_angle_phase == 3U)) {
-        // 入弯平滑权重（0→1，用于入弯时控制量渐变）
-        float entry;
-        // 灰度接管权重（0→1，弯末灰度逐渐替代陀螺仪）
-        float gray_blend;
-        // 当前已转过的角度差值
+             (right_angle_phase == 2U || right_angle_phase == 3U)) {
         float yaw_diff = 0.0f;
-        // 置位弯道中标志
-        is_in_corner = 1;
+        float gray_blend = 0.0f;
+        float imu_diff_limit = 0.0f;
+        is_in_corner = 1U;
 
-        // --- 计算转弯进度（0~1）
-        {
-            // 计算从起始yaw到当前yaw的角度差绝对值
-            yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg, gyro_corner_start_yaw));
-            // 进度 = 已转角度 / 总目标角度
-            angle_progress = yaw_diff / CORNER_YAW_TARGET;
-            // 限制进度最大值为1
-            if (angle_progress > 1.0f) angle_progress = 1.0f;
-        }
-        // 保存转弯进度到调试变量
-        g_last_angle_progress = angle_progress;
-
-        // --- 计算两个融合权重（使用5阶S曲线平滑过渡）
-        // entry权重：入弯阶段渐进生效（进度0到入弯融合进度之间从0→1）
-        entry = CornerProfile_Smoothstep5(
-            angle_progress / CORNER_ENTRY_BLEND_PROGRESS);
-        // gray_blend权重：灰度接管渐进生效（从灰度融合起始角到退出角之间从0→1）
-        gray_blend = CornerProfile_Smoothstep5(
-            (yaw_diff - CORNER_GRAY_BLEND_START_DEG) /
-            (CORNER_IMU_EXIT_DEG - CORNER_GRAY_BLEND_START_DEG));
-
-        // --- 基础转速曲线：入弯减速-弯中最低-出弯加速
-        {
-            // 出弯加速权重：从出弯起始进度开始，速度逐渐恢复
-            float exit_speed = CornerProfile_Smoothstep5(
-                (angle_progress - CORNER_SPEED_EXIT_START_PROGRESS) /
-                CORNER_SPEED_EXIT_BLEND_WIDTH);
-            // 弯深系数 = 入弯权重 × (1 - 出弯权重)，表示当前弯的深浅
-            float corner_depth = entry * (1.0f - exit_speed);
-            // 基础转速 = 直道转速 - (直道转速 - 弯道转速) × 弯深系数
-            // 弯越深速度越低，弯越浅速度越接近直道
-            target_base = BASE_RPM - (BASE_RPM - CORNER_TURN_RPM) * corner_depth;
+        yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg, gyro_corner_start_yaw));
+        if (right_angle_phase == 3U) {
+            gray_blend = Track_Corner_GrayBlend(yaw_diff);
         }
 
-        // --- 陀螺仪PD闭环：计算转向差速修正量
+        // 基础转速保持不变，避免明显加速/减速
+        target_base = CORNER_TURN_RPM;
+        imu_diff_limit = CORNER_MAX_RPM - target_base;
+        if (imu_diff_limit > (target_base - CORNER_MIN_RPM)) {
+            imu_diff_limit = target_base - CORNER_MIN_RPM;
+        }
+        if (imu_diff_limit < 0.0f) {
+            imu_diff_limit = 0.0f;
+        }
+
         {
-            // 计算yaw角误差（目标yaw - 当前yaw）
             float yaw_error = Track_Angle_Delta_Deg(gyro_corner_target_yaw,
                                                     gyro_yaw_deg);
-            // PD控制：比例项(角度误差×Kp) - 微分项(角速度×Kd，阻尼作用)
+            float force_scale = Track_Corner_Imu_ForceScale(yaw_diff);
             gyro_diff = KP_CORNER_YAW * yaw_error
                       - KD_CORNER_YAW * gyro_yaw_rate;
+            gyro_diff *= force_scale * (1.0f - gray_blend);
         }
-        // 陀螺仪修正量限幅，防止差速过大
-        gyro_diff = f_clamp(gyro_diff, CORNER_GYRO_DIFF_LIMIT_RPM);
 
-        // --- 陀螺仪修正权重调配：入弯渐进+弯末淡出
-        // 弯中陀螺仪主导，弯末灰度逐渐接管（gray_blend增大时陀螺仪权重减小）
-        gyro_diff *= entry * (1.0f - gray_blend);
-        // 陀螺仪修正量斜坡限制（ slew rate ），防止突变
-        corner_gyro_diff_smooth = CornerProfile_Slew(
-            corner_gyro_diff_smooth, gyro_diff,
-            CORNER_DIFF_SLEW_UP_RPM_PER_MS);
-        // 使用平滑后的陀螺仪修正量
-        gyro_diff = corner_gyro_diff_smooth;
-        // 保存陀螺仪修正量到调试变量
-        g_last_gyro_diff = gyro_diff;
-
-        // --- 灰度PID修正：随灰度融合权重逐步接管转向
-        pid_correction = gray_blend * pid_smooth;
+        gyro_diff = f_clamp(gyro_diff, imu_diff_limit);
+        pid_correction = gray_blend * raw_pid;
     }
 
     // ==============================================
-    // 状态分支3：正常直道巡线
+    // 状态分支：正常直道巡线
     // 功能：使用基础转速 + 灰度PID修正
     // ==============================================
     else {
@@ -831,8 +759,19 @@ void Track_Action_Execute(void)
         // 直道无陀螺仪差速修正
         gyro_diff    = 0.0f;
         // 完全使用灰度PID修正
-        pid_correction = pid_smooth;
+        pid_correction = raw_pid;
     }
+
+    if (is_in_corner) {
+        g_last_angle_progress = f_clamp01(
+            fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg, gyro_corner_start_yaw)) /
+            CORNER_YAW_TARGET);
+    } else {
+        g_last_angle_progress = 0.0f;
+    }
+    g_last_gyro_diff = gyro_diff;
+    g_last_target_base = target_base;
+    g_last_pid_correction = pid_correction;
 
     // ==============================================
     // 直道陀螺仪阻尼：利用yaw角速度抑制直道车身晃动
@@ -850,30 +789,13 @@ void Track_Action_Execute(void)
     }
 
     // ==============================================
-    // 基础转速斜坡限制：加减速平滑，防止转速突变
+    // 合成左右轮目标转速 + 限幅
     // ==============================================
-    base_rpm_current = CornerProfile_Slew(
-        base_rpm_current, target_base,
-        // 减速时用减速斜率，加速时用加速斜率
-        (target_base < base_rpm_current) ? CORNER_BASE_SLEW_DOWN_RPM_PER_MS
-                                        : CORNER_BASE_SLEW_UP_RPM_PER_MS);
-    // 保存调试变量
-    g_last_target_base = target_base;
-    g_last_pid_correction = pid_correction;
-
-    // ==============================================
-    // 合成左右轮目标转速 + 限幅 + 斜坡限制
-    // ==============================================
-    {
-    // 保存上一拍左右轮目标转速（用于斜坡限制）
-    float previous_left = Left_Base_RPM;
-    float previous_right = Right_Base_RPM;
-
     // --- 合成左右轮目标转速
     // 左轮 = 基础转速 - 陀螺仪差速(左减) + PID修正(左加)
     // 右轮 = 基础转速 + 陀螺仪差速(右加) - PID修正(右减)
-    Left_Base_RPM  = base_rpm_current - gyro_diff + pid_correction;
-    Right_Base_RPM = base_rpm_current + gyro_diff - pid_correction;
+    Left_Base_RPM  = target_base - gyro_diff + pid_correction;
+    Right_Base_RPM = target_base + gyro_diff - pid_correction;
 
     // --- 直道转速限幅：限制在0~最大直道转速范围内
     if (Left_Base_RPM  < 0.0f) Left_Base_RPM  = 0.0f;
@@ -887,13 +809,6 @@ void Track_Action_Execute(void)
         if (Left_Base_RPM  > CORNER_MAX_RPM) Left_Base_RPM  = CORNER_MAX_RPM;
         if (Right_Base_RPM < CORNER_MIN_RPM) Right_Base_RPM = CORNER_MIN_RPM;
         if (Right_Base_RPM > CORNER_MAX_RPM) Right_Base_RPM = CORNER_MAX_RPM;
-    }
-
-    // --- 轮速指令斜坡限制：限制相邻周期转速变化率，防止突变
-    Left_Base_RPM = CornerProfile_Slew(previous_left, Left_Base_RPM,
-                                       WHEEL_COMMAND_SLEW_RPM_PER_MS);
-    Right_Base_RPM = CornerProfile_Slew(previous_right, Right_Base_RPM,
-                                        WHEEL_COMMAND_SLEW_RPM_PER_MS);
     }
 }
 
@@ -1259,7 +1174,6 @@ void Track_Init(void)
     right_angle_phase           = 0;
     right_angle_initial_flag = 0;
     right_angle_detect_type  = 0;
-    corner_gyro_diff_smooth = 0.0f;
     // 初始化直角检测器
     RightAngleDetector_Init(&right_angle_detector);
     right_angle_filtered_bits = 0xFFU;

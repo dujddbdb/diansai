@@ -20,11 +20,21 @@
 // 返回值: 1-初始化成功
 static uint8_t Eye_WaitForIMUData(void)
 {
+    float roll_deg;
+    float pitch_deg;
+    float yaw_deg;
+
     while (1) {
         BNO080_I2C_Init();
         if (bno080_init()) {
-            USART3_SendString("[EYE] BNO080 first frame ready\r\n");
-            return 1U;
+            while (1) {
+                if (bno080_update() && bno080_data_available()) {
+                    bno080_get_euler(&roll_deg, &pitch_deg, &yaw_deg);
+                    USART3_SendString("[EYE] BNO080 first frame ready\r\n");
+                    return 1U;
+                }
+                delay_ms(1U);
+            }
         }
         USART3_SendString("[EYE] waiting BNO080 first frame...\r\n");
         delay_ms(100U);

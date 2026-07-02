@@ -5,6 +5,8 @@ import unittest
 
 SOURCE = (pathlib.Path(__file__).parents[1] / "project_1.0 car" / "bsp" / "bno080.c")
 EYE_SOURCE = (pathlib.Path(__file__).parents[1] / "project_1.0 eye" / "bsp" / "bno080.c")
+CAR_TRACK = (pathlib.Path(__file__).parents[1] / "project_1.0 car" / "bsp" / "track.c")
+EYE_MAIN = (pathlib.Path(__file__).parents[1] / "project_1.0 eye" / "app" / "main.c")
 
 
 class BnoPolicyTest(unittest.TestCase):
@@ -37,6 +39,24 @@ class BnoPolicyTest(unittest.TestCase):
             self.assertIn("if (g_bno080.new_data)", init)
             self.assertIn("g_bno080.new_data = 0", init)
             self.assertRegex(init, r"return\s+0;\s*}")
+
+    def test_power_on_waits_until_both_imus_have_runtime_frame(self):
+        track = CAR_TRACK.read_text(encoding="utf-8", errors="replace")
+        car_init = track[track.index("void Track_Init(void)"):]
+        self.assertIn("while (!gyro_yaw_available)", car_init)
+        self.assertIn("gyro_poll_request = 1U;", car_init)
+        self.assertIn("Track_Main_Gyro();", car_init)
+        self.assertIn("Track_Gyro_Update();", car_init)
+
+        eye_main = EYE_MAIN.read_text(encoding="utf-8", errors="replace")
+        wait = eye_main[eye_main.index("static uint8_t Eye_WaitForIMUData"):
+                        eye_main.index("int main(void)")]
+        self.assertIn("while (1)", wait)
+        self.assertIn("BNO080_I2C_Init();", wait)
+        self.assertIn("bno080_init()", wait)
+        self.assertIn("bno080_update()", wait)
+        self.assertIn("bno080_data_available()", wait)
+        self.assertIn("bno080_get_euler", wait)
 
 
 if __name__ == "__main__":

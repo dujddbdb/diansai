@@ -107,6 +107,7 @@
 #define VISION_IMU_DRAIN_MAX_PACKETS     6U     // IMU数据包最大排空数，每周期最多处理的IMU数据包数量
 #define VISION_CONTROL_PERIOD_MS         5U     // 视觉控制周期(ms)，PID计算和云台控制的执行频率
 #define VISION_IMU_FEEDFORWARD_ALWAYS_ON 1U     // IMU前馈常开关，1-始终开启前馈，0-仅锁定时开启
+#define VISION_K230_PACKET_TIMEOUT_MS    60U    // K230数据超时阈值，超时后清目标防止状态机卡住
 
 // ============================================================
 //  IMU卡尔曼滤波参数

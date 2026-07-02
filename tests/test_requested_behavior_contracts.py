@@ -22,8 +22,8 @@ class RequestedBehaviorContracts(unittest.TestCase):
 
     def test_car_pretrigger_uses_strict_all_white_only(self):
         track_c = read_project_text("project_1.0 car", "bsp", "track.c")
-        phase1_start = track_c.index("if (is_right_angle == 0 && right_angle_phase <= 1U")
-        phase2_start = track_c.index("else if (is_right_angle != 0 && right_angle_phase == 2)")
+        phase1_start = track_c.index("else if (is_right_angle == 0 && right_angle_phase == 1U)")
+        phase2_start = track_c.index("else if (is_right_angle != 0 && right_angle_phase == 2U)")
         phase1 = track_c[phase1_start:phase2_start]
 
         self.assertIn("RightAngleDetector_AllWhite", phase1)
@@ -60,7 +60,8 @@ class RequestedBehaviorContracts(unittest.TestCase):
         self.assertIn("return CROP_ROI", main_py)
         self.assertIn("center_penalty = (abs(cx - ORIGIN_X) +", main_py)
         self.assertIn("abs(cy - ORIGIN_Y)) * 0.01", main_py)
-        self.assertIn("crop_roi = detection_center_roi()", main_py)
+        self.assertIn("chn=DETECT_CHN, crop=CROP_ROI", main_py)
+        self.assertIn("view = img.copy(roi=detection_center_roi())", main_py)
         self.assertNotIn("LASER_OFFSET_X", main_py)
         self.assertNotIn("LASER_OFFSET_Y", main_py)
         self.assertNotIn("find_laser", main_py.lower())
