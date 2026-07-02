@@ -2,7 +2,6 @@
 #include "uart_k230.h"
 #include "peripheral.h"
 #include "gimbal_pid.h"
-#include "vision_strategy.h"
 #include "uart5.h"
 #include "key.h"
 #include "bno080.h"
@@ -23,15 +22,10 @@ static uint32_t         __attribute__((unused)) s_debug_last_ms = 0U;
 // 上次是否接收到新数据包标志
 static uint8_t          s_last_fresh_packet = 0U;
 
-// 2π常量, 用于圆形扫描相位计算
-#define VISION_TWO_PI               6.2831853f
-
 // 视觉工作模式枚举
 typedef enum {
-    VISION_MODE_IDLE = 0,       // 0-空闲模式
-    VISION_MODE_CIRCLE,         // 1-圆形扫描模式
-    VISION_MODE_SHOOT,          // 2-追踪射击模式
-    VISION_MODE_SHOOT_CIRCLE    // 3-追踪+圆形扫描复合模式
+    VISION_MODE_IDLE = 0,   // 0-空闲模式
+    VISION_MODE_RUN         // 1-运行模式：K230误差 → PID → 云台
 } Vision_Mode_t;
 
 // IMU角度一阶卡尔曼滤波器状态结构体
@@ -58,8 +52,6 @@ static Vision_AngleKalman_t s_yaw_kf = {0};
 static Vision_AngleKalman_t s_pitch_kf = {0};
 // 当前视觉工作模式
 static Vision_Mode_t s_eye_mode = VISION_MODE_IDLE;
-// 圆形扫描当前相位
-static float s_circle_phase = 0.0f;
 
 // 浮点数区间钳位函数: 将value限制在[min_v, max_v]范围内
 static float Vision_ClampFloat(float value, float min_v, float max_v)
@@ -411,99 +403,31 @@ static uint8_t Vision_UpdateGimbalIMUCompensation(void)
     return 0U;
 }
 
-// 判断当前模式是否为射击模式(SHOOT 或 SHOOT_CIRCLE)
-static uint8_t Vision_ModeShoots(void)
-{
-    return (s_eye_mode == VISION_MODE_SHOOT ||
-            s_eye_mode == VISION_MODE_SHOOT_CIRCLE) ? 1U : 0U;
-}
-
-// 判断当前模式是否为圆形扫描模式(CIRCLE 或 SHOOT_CIRCLE)
-static uint8_t Vision_ModeCircles(void)
-{
-    return (s_eye_mode == VISION_MODE_CIRCLE ||
-            s_eye_mode == VISION_MODE_SHOOT_CIRCLE) ? 1U : 0U;
-}
-
-// 计算圆形扫描偏移量: 相位累加→cos/sin生成圆轨迹→相位归零循环
-static void Vision_CircleOffset(float *circle_x, float *circle_y)
-{
-    // 相位步进累加
-    s_circle_phase += VISION_CIRCLE_STEP_RAD;
-    // 相位超过2π，减去2π实现循环
-    if (s_circle_phase >= VISION_TWO_PI) {
-        s_circle_phase -= VISION_TWO_PI;
-    }
-
-    // 极坐标转直角坐标: 相位控制扫描方向，半径控制扫描幅度
-    *circle_x = VISION_CIRCLE_RADIUS_PX * cosf(s_circle_phase);
-    *circle_y = VISION_CIRCLE_RADIUS_PX * sinf(s_circle_phase);
-}
-
-// 执行云台控制: 目标处理→PID更新→激光触发→角度记录
-static void Vision_ApplyControl(float error_x, float error_y,
-                                uint8_t target_seen,
-                                uint8_t laser_allowed)
+// 执行云台控制: 目标处理→PID更新→激光触发
+static void Vision_ApplyControl(float error_x, float error_y)
 {
     // 目标处理，更新视觉上下文误差
     Vision_TargetProcess((int16_t)error_x, (int16_t)error_y, true);
-    // 目标不可见时清除检测标志
-    if (!target_seen) {
-        s_vision_ctx.target_detected = 0U;
-    }
     // 云台PID计算更新
     Vision_GimbalPID_Update(s_vision_ctx.error_x, s_vision_ctx.error_y);
     // 激光触发判断
-    Vision_LaserTrigger(laser_allowed ? true : false);
-    // 记录云台角度到策略模块
-    VisionStrategy_SetGimbalAngle(s_vision_ctx.gimbal_x_angle,
-                                  s_vision_ctx.gimbal_y_angle);
+    Vision_LaserTrigger(true);
 }
 
-// 纯圆形扫描执行(无目标时根据圆形扫描偏移量控制云台)
-static void Vision_RunCircleOnly(void)
-{
-    float circle_x;
-    float circle_y;
-
-    // 计算圆形扫描偏移量
-    Vision_CircleOffset(&circle_x, &circle_y);
-    // 应用圆形偏移控制云台，无目标，不触发激光
-    Vision_ApplyControl(circle_x, circle_y, 0U, 0U);
-}
-
-// 按键模式切换处理: KEY0→空闲, KEY1→圆形扫描, KEY2→追踪射击, KEY3→追踪+圆形扫描
+// 按键模式切换处理: KEY0→空闲, KEY2→运行(K230误差→PID→云台)
 void Vision_KeyControlTick(void)
 {
     // KEY0: 切换到空闲模式，停止所有动作
     if (Key_GetState(0U) == KEY_PRESS) {
         s_eye_mode = VISION_MODE_IDLE;
-        s_circle_phase = 0.0f;
         Vision_TargetProcess(0, 0, false);
         Vision_LaserTrigger(false);
         Vision_GimbalPID_ClearIntegral();
     }
 
-    // KEY1: 切换到纯圆形扫描模式
-    if (Key_GetState(1U) == KEY_PRESS) {
-        s_eye_mode = VISION_MODE_CIRCLE;
-        s_circle_phase = 0.0f;
-        Vision_LaserTrigger(false);
-        Vision_GimbalPID_ClearIntegral();
-    }
-
-    // KEY2: 切换到追踪射击模式
+    // KEY2: 切换到运行模式
     if (Key_GetState(2U) == KEY_PRESS) {
-        s_eye_mode = VISION_MODE_SHOOT;
-        s_circle_phase = 0.0f;
-        Vision_LaserTrigger(false);
-        Vision_GimbalPID_ClearIntegral();
-    }
-
-    // KEY3: 切换到追踪+圆形扫描复合模式
-    if (Key_GetState(3U) == KEY_PRESS) {
-        s_eye_mode = VISION_MODE_SHOOT_CIRCLE;
-        s_circle_phase = 0.0f;
+        s_eye_mode = VISION_MODE_RUN;
         Vision_LaserTrigger(false);
         Vision_GimbalPID_ClearIntegral();
     }
@@ -524,7 +448,7 @@ static void __attribute__((unused)) Vision_DebugPrint(void)
 
     // 格式化调试信息
     snprintf(line, sizeof(line),
-             "[EYE DBG] fresh=%u valid=%u raw_err=(%d,%d) err=(%.1f,%.1f) pid=(%.2f,%.2f) dir=(%u,%u) pulse=(%lu,%lu) roi=%u errc=%u\r\n",
+             "[EYE DBG] fresh=%u valid=%u raw_err=(%d,%d) err=(%.1f,%.1f) pid=(%.2f,%.2f) dir=(%u,%u) pulse=(%lu,%lu) errc=%u\r\n",
              (unsigned)s_last_fresh_packet,
              (unsigned)k230_parsed.track_valid,
              (int)k230_parsed.err_y,
@@ -537,7 +461,6 @@ static void __attribute__((unused)) Vision_DebugPrint(void)
              (unsigned)dbg->dir_y,
              (unsigned long)dbg->pulses_x,
              (unsigned long)dbg->pulses_y,
-             (unsigned)s_vision_ctx.roi_state,
              (unsigned)k230_parsed.error_code);
 
     // 通过串口3发送调试信息
@@ -659,25 +582,6 @@ void Vision_GetError(float *err_x, float *err_y, float *dist)
     if (dist  != NULL) *dist  = s_vision_ctx.error_distance;
 }
 
-// 追踪系统初始化
-void Tracking_Init(void)
-{
-    VisionStrategy_Init();
-}
-
-// 追踪系统更新
-void Tracking_Update(uint8_t target_detected)
-{
-    VisionStrategy_Update(target_detected);
-    s_vision_ctx.roi_state = VisionStrategy_GetROIState();
-}
-
-// 获取追踪状态指针
-VisionStrategy_t* Tracking_GetState(void)
-{
-    return VisionStrategy_GetState();
-}
-
 // 视觉系统初始化
 void Vision_Init(void)
 {
@@ -699,9 +603,6 @@ void Vision_Init(void)
     }
     // 初始化云台PID控制器
     Vision_GimbalPID_Init();
-    // 初始化视觉策略(ROI状态机)
-    Tracking_Init();
-
     // 初始化视觉上下文状态
     s_vision_ctx.error_x = 0.0f;
     s_vision_ctx.error_y = 0.0f;
@@ -711,14 +612,12 @@ void Vision_Init(void)
     s_vision_ctx.hit_streak = 0U;
     s_vision_ctx.gimbal_x_angle = 0;
     s_vision_ctx.gimbal_y_angle = 0;
-    s_vision_ctx.roi_state = ROI_FULL;
-
     // 标记系统已初始化
     s_initialized = 1U;
 }
 
 // 视觉模式状态机主循环
-// 四种模式: 空闲/圆形扫描/追踪射击/追踪+圆形扫描
+// 两种模式: 空闲 / 运行(K230误差 → PID → 云台)
 void Vision_Process(void)
 {
     static uint32_t last_packet_ms = 0U;
@@ -748,67 +647,31 @@ void Vision_Process(void)
 
     // 阶段3: 空闲模式 — 停止所有输出，仅保持IMU补偿
     if (s_eye_mode == VISION_MODE_IDLE) {
-        s_circle_phase = 0.0f;
         Vision_TargetProcess(0, 0, false);
         Vision_LaserTrigger(false);
-        Tracking_Update(0U);
         return;
     }
 
     // 阶段4: 收到新数据包且非空闲模式，执行核心控制逻辑
     if (fresh_packet) {
         uint8_t target_valid = k230_parsed.track_valid ? 1U : 0U;
-        float control_x = 0.0f;
-        float control_y = 0.0f;
-        float circle_x = 0.0f;
-        float circle_y = 0.0f;
 
-        // ROI状态机更新: 根据目标有无自动切换ROI大小
-        Tracking_Update(target_valid);
-
-        // 圆形扫描模式额外叠加圆形偏移
-        if (Vision_ModeCircles()) {
-            Vision_CircleOffset(&circle_x, &circle_y);
-        }
-
-        // 目标有效且射击模式: K230误差 + 圆形偏移 → PID控制 → 激光触发
-        if (target_valid && Vision_ModeShoots()) {
-            control_x = (float)k230_parsed.err_y;
-            control_y = (float)k230_parsed.err_z;
-            control_x += circle_x;
-            control_y += circle_y;
-            Vision_ApplyControl(control_x, control_y, 1U, 1U);
-        } else if (Vision_ModeCircles()) {
-            // 纯圆形扫描: 无目标，按圆形轨迹运动
-            Vision_ApplyControl(circle_x, circle_y, 0U, 0U);
+        // 目标有效: K230误差 → PID控制 → 激光触发
+        if (target_valid) {
+            Vision_ApplyControl((float)k230_parsed.err_y, (float)k230_parsed.err_z);
         } else {
-            // 有数据包但无目标且非圆形模式: 停止追踪
+            // 有数据包但无目标: 停止追踪
             Vision_TargetProcess(0, 0, false);
             Vision_LaserTrigger(false);
-
-            // 全图模式下启动蛇形扫描搜索
-            if (VisionStrategy_GetROIState() == ROI_FULL) {
-                VisionStrategy_GimbalScan();
-            }
         }
     } else if (packet_stale) {
         // K230超时: 清除旧目标，防止状态机卡住在上一次检测结果
         Vision_TargetProcess(0, 0, false);
         Vision_LaserTrigger(false);
-        Tracking_Update(0U);
         if (!stale_latched) {
             Vision_GimbalPID_ClearIntegral();
             stale_latched = 1U;
         }
-        if (VisionStrategy_GetROIState() == ROI_FULL) {
-            VisionStrategy_GimbalScan();
-        }
-        if (Vision_ModeCircles()) {
-            Vision_RunCircleOnly();
-        }
-    } else if (Vision_ModeCircles()) {
-        // 无新数据包但圆形扫描模式: 继续执行圆形扫描
-        Vision_RunCircleOnly();
     }
 
     // 阶段5: 调试打印输出(默认注释)

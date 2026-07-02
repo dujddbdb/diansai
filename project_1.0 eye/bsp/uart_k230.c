@@ -6,10 +6,10 @@
 
 // K230接收缓冲区
 uint8_t k230_rx_buf[K230_RX_BUF_SIZE];
-// 接收字节计数
-uint8_t k230_rx_count = 0U;
-// 接收完成标志 (IDLE中断置位)
-bool    k230_rx_flag = false;
+// 接收字节计数（ISR写, 主循环读, 必须volatile防止编译器缓存导致状态机卡死）
+volatile uint8_t k230_rx_count = 0U;
+// 接收完成标志 (IDLE中断置位, 必须volatile防止编译器缓存导致状态机卡死)
+volatile bool    k230_rx_flag = false;
 // 解析后的数据
 K230_ParsedData k230_parsed = {0};
 

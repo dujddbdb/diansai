@@ -33,10 +33,10 @@ typedef struct {
 
 // K230接收缓冲区, 存储接收到的原始字节数据
 extern uint8_t k230_rx_buf[K230_RX_BUF_SIZE];
-// K230已接收字节计数, 记录当前缓冲区中已接收的字节数
-extern uint8_t k230_rx_count;
-// K230接收完成标志, true表示一帧数据接收完成
-extern bool    k230_rx_flag;
+// K230已接收字节计数, 记录当前缓冲区中已接收的字节数（ISR写, 主循环读, 必须volatile）
+extern volatile uint8_t k230_rx_count;
+// K230接收完成标志, true表示一帧数据接收完成（ISR写, 主循环读, 必须volatile）
+extern volatile bool    k230_rx_flag;
 // K230解析后的数据, 存放最新一帧解析后的有效数据
 extern K230_ParsedData k230_parsed;
 

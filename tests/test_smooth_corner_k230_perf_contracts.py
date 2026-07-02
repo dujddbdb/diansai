@@ -33,18 +33,29 @@ class SmoothCornerK230PerfContracts(unittest.TestCase):
         config = read_text("project_1.0 car", "bsp", "track_config.h")
         track = read_text("project_1.0 car", "bsp", "track.c")
 
-        self.assertEqual(macro_float(config, "CORNER_IMU_MID_DEG"), 45.0)
-        self.assertEqual(macro_float(config, "CORNER_GRAY_BLEND_START_DEG"), 75.0)
-        self.assertEqual(macro_float(config, "CORNER_IMU_EXIT_DEG"), 85.0)
+        self.assertEqual(macro_float(config, "CORNER_IMU_ENTRY_RAMP_DEG"), 18.0)
+        self.assertNotIn("CORNER_IMU_MID_DEG", config + track)
+        self.assertEqual(macro_float(config, "CORNER_YAW_EXIT_EPSILON_DEG"), 3.0)
         for removed in (
             "CORNER_PID_SMOOTH_ALPHA",
             "CORNER_GYRO_DIFF_LIMIT_RPM",
             "CORNER_BASE_SLEW_DOWN_RPM_PER_MS",
             "CORNER_BASE_SLEW_UP_RPM_PER_MS",
             "WHEEL_COMMAND_SLEW_RPM_PER_MS",
+            "CORNER_GRAY_BLEND_START_DEG",
+            "CORNER_IMU_EXIT_DEG",
         ):
             self.assertNotIn(removed, config + track)
-        self.assertNotIn("CornerProfile_Slew(", track)
+        # 直角弯道内部转速恒定(CORNER_TURN_RPM)，不使用斜率限幅；
+        # CornerProfile_Slew仅用于达标后的停车减速斜坡，不用于弯道内部
+        action_start = track.index("void Track_Action_Execute(void)")
+        action_corner_start = track.index(
+            "is_right_angle != 0 && right_angle_phase == 2U) {", action_start
+        )
+        action_corner_end = track.index("else {", action_corner_start)
+        action_corner = track[action_corner_start:action_corner_end]
+        self.assertNotIn("CornerProfile_Slew(", action_corner)
+        self.assertIn("track_stop_ramp_rpm = CornerProfile_Slew(", track)
 
     def test_corner_completion_clears_debounced_detector_state(self):
         track = read_text("project_1.0 car", "bsp", "track.c")

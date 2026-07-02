@@ -35,22 +35,22 @@ ORIGIN_X = IMG_W // 2  # 原点X坐标(裁剪图像坐标系)
 ORIGIN_Y = IMG_H // 2  # 原点Y坐标(裁剪图像坐标系)
 
 # 显示模式
-HEADLESS = True           # 无头模式，True则不初始化LCD显示
-SHOW_TO_IDE = False       # 是否输出图像到IDE预览
+HEADLESS = False            # 无头模式，True则不初始化LCD显示
+SHOW_TO_IDE = True      # 是否输出图像到IDE预览
 SENSOR_PIXFORMAT = "GRAYSCALE"  # 传感器像素格式
-DISPLAY_EVERY_N = 12      # 每N帧刷新一次显示，调大则显示帧率低但节省CPU
+DISPLAY_EVERY_N = 3      # 每N帧刷新一次显示，调大则显示帧率低但节省CPU
 
 # 检测参数
 FIND_RECTS_THRESHOLD = 9000  # 矩形检测阈值，调大则检测更少但更精准
 FIND_RECTS_FALLBACK_PERIOD = 30  # find_rects较慢，仅低频兜底
 BLOB_X_STRIDE = 3                # Blob水平步进，调大速度更快但细线更容易漏检
 BLOB_Y_STRIDE = 3                # Blob垂直步进，调大速度更快但细线更容易漏检
-BLACK_GRAY_TH = 95           # 黑色灰度阈值，调大则更多像素被判定为黑色
+BLACK_GRAY_TH = 90           # 黑色灰度阈值，调大则更多像素被判定为黑色
 OUTER_MIN_AREA = 700         # 外框最小面积(像素²)
 OUTER_MAX_AREA = 90000       # 外框最大面积(像素²)
 ASPECT_MIN = 0.55            # 最小宽高比
 ASPECT_MAX = 1.75            # 最大宽高比
-MAX_ASSOC_DIST = 80          # 最大关联距离(像素)，超过则认为是新目标
+MAX_ASSOC_DIST = 40          # 最大关联距离(像素)，超过则认为是新目标
 
 
 # 数值钳位函数：将x限制在[lo, hi]范围内

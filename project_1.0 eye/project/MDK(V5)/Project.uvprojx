@@ -546,16 +546,6 @@
               <FilePath>..\..\bsp\vision.h</FilePath>
             </File>
             <File>
-              <FileName>vision_strategy.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>..\..\bsp\vision_strategy.c</FilePath>
-            </File>
-            <File>
-              <FileName>vision_strategy.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>..\..\bsp\vision_strategy.h</FilePath>
-            </File>
-            <File>
               <FileName>oled.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\bsp\oled\oled.c</FilePath>

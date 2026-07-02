@@ -4,7 +4,6 @@
 #include "stm32f4xx.h"
 #include "stdbool.h"
 #include "gimbal_pid.h"
-#include "vision_strategy.h"
 
 // 视觉系统上下文状态结构体
 typedef struct {
@@ -16,7 +15,6 @@ typedef struct {
     uint8_t  hit_streak;         // 连续命中计数
     int16_t  gimbal_x_angle;     // 云台X轴角度 (度)
     int16_t  gimbal_y_angle;     // 云台Y轴角度 (度)
-    ROI_State_t roi_state;       // ROI搜索区域状态
 } Vision_Context_t;
 
 // 初始化视觉系统PID控制器
@@ -68,21 +66,6 @@ uint8_t Vision_LaserTrigger(bool target_valid);
 //       dist  - 输出误差距离指针
 // 返回值: 无
 void Vision_GetError(float *err_x, float *err_y, float *dist);
-
-// 初始化追踪策略模块
-// 参数: 无
-// 返回值: 无
-void Tracking_Init(void);
-
-// 更新追踪状态
-// 参数: target_detected - 0-未检测到目标, 1-检测到目标
-// 返回值: 无
-void Tracking_Update(uint8_t target_detected);
-
-// 获取追踪策略状态结构体指针
-// 参数: 无
-// 返回值: VisionStrategy_t* - 策略状态结构体指针
-VisionStrategy_t* Tracking_GetState(void);
 
 // 初始化整个视觉系统
 // 参数: 无

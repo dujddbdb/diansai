@@ -30,6 +30,10 @@ class RequestedBehaviorContracts(unittest.TestCase):
         self.assertIn("RightAngleDetector_WhiteConfirmed", phase1)
         self.assertNotIn("RightAngleDetector_WhiteEnough", phase1)
         self.assertNotIn("RIGHT_ANGLE_PRE_TIMEOUT_MS", phase1)
+        # 允许放弃预触发，但必须挂在传感器图案判据(AbandonConfirmed)之后，不能是超时
+        abandon_idx = phase1.index("RightAngleDetector_AbandonConfirmed")
+        reset_idx = phase1.index("Track_Reset_Right_Angle_State();")
+        self.assertGreater(reset_idx, abandon_idx)
 
     def test_eye_disables_euler_closed_loop_and_uses_imu_delta(self):
         gimbal_h = read_project_text("project_1.0 eye", "bsp", "gimbal_pid.h")
@@ -50,7 +54,7 @@ class RequestedBehaviorContracts(unittest.TestCase):
         self.assertRegex(main_py, r"(?m)^CAM_W\s*=\s*1920\b")
         self.assertRegex(main_py, r"(?m)^CAM_H\s*=\s*1080\b")
         self.assertRegex(main_py, r"(?m)^CROP_CENTER_X\s*=\s*CAM_W // 2\b")
-        self.assertRegex(main_py, r"(?m)^CROP_CENTER_Y\s*=\s*CAM_H // 2 - 77\b")
+        self.assertRegex(main_py, r"(?m)^CROP_CENTER_Y\s*=\s*CAM_H // 2 - 88\b")
         self.assertIn("CROP_X = max(0, min(CAM_W - IMG_W, CROP_CENTER_X - IMG_W // 2))", main_py)
         self.assertIn("CROP_Y = max(0, min(CAM_H - IMG_H, CROP_CENTER_Y - IMG_H // 2))", main_py)
         self.assertIn("CROP_ROI = (CROP_X, CROP_Y, IMG_W, IMG_H)", main_py)

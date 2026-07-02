@@ -13,6 +13,7 @@ typedef struct {
     uint8_t feature_type;      // 当前检测到的特征类型（0-无特征，1-右直角，2-左直角）
     uint8_t feature_hits;      // 特征连续命中计数（用于去抖确认）
     uint8_t white_hits;        // 全白连续命中计数（用于出弯判断去抖）
+    uint8_t abandon_hits;      // 放弃预触发连续命中计数（中间黑+边缘白，去抖用）
 } RightAngleDetector_t;
 
 // 检测直角特征（无滤波，即时判断）
@@ -59,6 +60,25 @@ static inline uint8_t RightAngleDetector_WhiteCount(uint8_t bits)
 static inline uint8_t RightAngleDetector_WhiteEnough(uint8_t bits)
 {
     return (RightAngleDetector_WhiteCount(bits) >= RIGHT_ANGLE_WHITE_MIN) ? 1U : 0U;
+}
+
+// 判断中间通道（2/3/4/5）是否存在黑线
+// 功能：用于识别"已回到正常巡线中心黑线"的图案，区分真直角与横杆/交叉线误触发
+// 参数：bits - 8位数字量
+// 返回值：1-中间通道存在黑线，0-中间通道全白
+static inline uint8_t RightAngleDetector_MiddleBlack(uint8_t bits)
+{
+    return ((bits & 0x3CU) != 0x3CU) ? 1U : 0U;
+}
+
+// 判断边缘通道（0/1/6/7）是否全白
+// 功能：真直角特征侧通道在预触发期间应保持黑电平直至全白；若边缘先于中间转白，
+//       说明黑色区域曾覆盖全宽（横杆/交叉线），并非从单侧收窄的真直角
+// 参数：bits - 8位数字量
+// 返回值：1-四个边缘通道全白，0-至少一个边缘通道仍为黑
+static inline uint8_t RightAngleDetector_EdgesWhite(uint8_t bits)
+{
+    return ((bits & 0xC3U) == 0xC3U) ? 1U : 0U;
 }
 
 // 初始化直角检测器
@@ -131,6 +151,18 @@ static inline uint8_t RightAngleDetector_Update(RightAngleDetector_t *detector,
         detector->white_hits = 0U;
     }
 
+    // 放弃预触发确认（去抖）：无特征 + 中间黑 + 边缘白 = 已回到正常巡线图案，
+    // 说明预触发是横杆/交叉线等全宽黑特征造成的误判，而非真直角收窄
+    if (type == 0U &&
+        RightAngleDetector_MiddleBlack(detector->filtered) &&
+        RightAngleDetector_EdgesWhite(detector->filtered)) {
+        if (detector->abandon_hits < RIGHT_ANGLE_ABANDON_CONFIRM_SAMPLES) {
+            detector->abandon_hits++;
+        }
+    } else {
+        detector->abandon_hits = 0U;
+    }
+
     return detector->filtered;
 }
 
@@ -155,6 +187,25 @@ static inline uint8_t RightAngleDetector_WhiteConfirmed(
 {
     // 全白命中次数达到确认阈值才认为有效
     return (detector->white_hits >= RIGHT_ANGLE_WHITE_CONFIRM_SAMPLES) ? 1U : 0U;
+}
+
+// 检查放弃预触发条件是否已确认（经过去抖）
+// 功能：判断"中间黑+边缘白"图案是否经过去抖确认，用于预触发期间放弃误触发
+// 参数：detector - 检测器实例指针
+// 返回值：1-放弃条件已确认，0-未确认
+static inline uint8_t RightAngleDetector_AbandonConfirmed(
+    const RightAngleDetector_t *detector)
+{
+    return (detector->abandon_hits >= RIGHT_ANGLE_ABANDON_CONFIRM_SAMPLES) ? 1U : 0U;
+}
+
+// 重置放弃预触发的去抖计数
+// 功能：进入预触发阶段时清零，避免沿用进入前直道巡线积累的命中数
+// 参数：detector - 检测器实例指针
+// 返回值：无
+static inline void RightAngleDetector_ResetAbandon(RightAngleDetector_t *detector)
+{
+    detector->abandon_hits = 0U;
 }
 
 #endif

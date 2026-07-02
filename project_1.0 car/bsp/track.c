@@ -62,8 +62,11 @@ volatile uint16_t Track_Corner_Count = 0U;
 
 // 是否处于弯道中的标志（0=直道，1=弯道）
 static uint8_t  is_in_corner    = 0;
-// 转弯角度进度（0~1，0=未开始，1=完成）
-static float    angle_progress  = 0.0f;
+
+// 达到目标圈数后是否处于停车减速斜坡中（0=否，1=正在斜坡减速，减到0后才真正断电）
+static uint8_t  track_stop_pending  = 0U;
+// 停车减速斜坡当前基础转速（RPM）
+static float    track_stop_ramp_rpm = 0.0f;
 
 // 上一次目标基础转速（调试用）
 static float g_last_target_base = 0.0f;
@@ -76,7 +79,7 @@ static float g_last_angle_progress = 0.0f;
 
 // 直角转弯检测结果（0=无，1=左转，2=右转）
 uint32_t is_right_angle              = 0;
-// 直角检测状态机当前阶段（0=空闲，1=预触发，2=IMU主体，3=灰度渐变接管）
+// 直角检测状态机当前阶段（0=空闲，1=预触发，2=IMU主体，直角全程由IMU执行）
 uint32_t right_angle_phase           = 0;
 // 直角初始触发标志（特征首次确认时记录）
 uint32_t right_angle_initial_flag    = 0;
@@ -86,6 +89,11 @@ uint32_t right_angle_detect_type     = 0;
 static RightAngleDetector_t right_angle_detector;
 // 直角检测器滤波后的8位灰度数据
 static uint8_t right_angle_filtered_bits = 0xFFU;
+// 巡线偏差参与通道掩码（bit=1参与计算）：预触发阶段屏蔽直角特征侧两通道，
+// 防止弯道横杆的大权重黑电平把巡线PID拉偏，导致入弯前甩头
+static uint8_t track_err_channel_mask = 0xFFU;
+// 掩码切换后一次性重播种误差滤波器，避免旧基线在新掩码域下产生阶跃
+static uint8_t track_err_reseed = 0U;
 
 // 左轮编码器累计脉冲数（累加统计用）
 volatile int32_t enc_acc_L = 0;
@@ -198,40 +206,29 @@ static float Track_Angle_Delta_Deg(float target, float current)
     return delta;
 }
 
-// IMU直角转弯力道包络：已转0/90度附近弱，45度附近最强
+// IMU直角转弯力道包络：入口平滑爬升，避免45度附近出现力道切换感
 static float Track_Corner_Imu_ForceScale(float turned_deg)
 {
-    float center = CORNER_IMU_MID_DEG;
+    float ramp = CORNER_IMU_ENTRY_RAMP_DEG;
     float min_scale = f_clamp01(CORNER_IMU_FORCE_MIN_SCALE);
     float x;
-    float envelope;
 
-    if (center <= 0.0f) {
+    if (ramp <= 0.0f) {
         return 1.0f;
     }
 
     if (turned_deg < 0.0f) {
-        turned_deg = -turned_deg;
+        turned_deg = 0.0f;
     }
 
-    x = (turned_deg - center) / center;
-    envelope = 1.0f - (x * x);
-    envelope = f_clamp01(envelope);
-
-    return min_scale + (1.0f - min_scale) * envelope;
-}
-
-// 最后10度灰度渐变接管：开始为0，退出角时为1
-static float Track_Corner_GrayBlend(float turned_deg)
-{
-    float width = CORNER_IMU_EXIT_DEG - CORNER_GRAY_BLEND_START_DEG;
-
-    if (width <= 0.0f) {
+    if (turned_deg >= ramp) {
         return 1.0f;
     }
 
-    return CornerProfile_Smoothstep5(
-        (turned_deg - CORNER_GRAY_BLEND_START_DEG) / width);
+    x = f_clamp01(turned_deg / ramp);
+    x = CornerProfile_Smoothstep5(x);
+
+    return min_scale + (1.0f - min_scale) * x;
 }
 
 // 向K230视觉模块发送当前转弯状态（状态变化时立即发送，转弯中周期发送）
@@ -303,6 +300,8 @@ static void Track_Reset_Right_Angle_State(void)
     right_angle_initial_flag = 0;
     // 清除检测类型
     right_angle_detect_type = 0;
+    // 恢复全部通道参与巡线偏差计算
+    track_err_channel_mask  = 0xFFU;
 }
 
 // 复位巡线控制状态：将所有PID、转速、滤波等控制变量清零
@@ -337,6 +336,9 @@ static void Track_Reset_Control_State(void)
     Right_LastBias = 0.0f;
     // 清除弯道中标志
     is_in_corner = 0U;
+    // 清除停车减速斜坡状态
+    track_stop_pending = 0U;
+    track_stop_ramp_rpm = 0.0f;
 }
 
 // 启动巡线控制：使能运行标志，复位计数和状态，启动速度环
@@ -389,8 +391,9 @@ void Track_TargetLapSub(void)
     }
 }
 
-// 注册弯道完成：弯道计数+1，满一圈弯道数则圈数+1，达到目标圈数则停车
-// 功能：每完成一个直角弯道调用一次，累计圈数并判断是否结束
+// 注册弯道完成：弯道计数+1，满一圈弯道数则圈数+1，达到目标圈数则请求停车
+// 功能：每完成一个直角弯道调用一次（在出弯瞬间），累计圈数并判断是否结束
+// 达到目标圈数时不直接硬急停，而是置位减速斜坡请求，交由直道逻辑平滑减速到0再断电
 static void Track_RegisterCornerComplete(void)
 {
     // 未使能运行时直接返回
@@ -404,9 +407,10 @@ static void Track_RegisterCornerComplete(void)
         if (Track_Completed_Laps < 0xFFFFU) {
             Track_Completed_Laps++;
         }
-        // 达到目标圈数时，停止巡线
+        // 达到目标圈数时，请求停车减速斜坡（不在此处硬停）
         if (Track_Completed_Laps >= Track_Target_Laps) {
-            Track_ControlStop();
+            track_stop_pending = 1U;
+            track_stop_ramp_rpm = BASE_RPM;
         }
     }
 }
@@ -521,6 +525,8 @@ int32_t Track_Calc_Err(void)
 
     // --- 第一步：遍历8路灰度传感器，计算加权和与黑度和
     for (i = 0; i < 8; i++) {
+        // 被掩码屏蔽的通道不参与偏差计算（预触发阶段屏蔽特征侧通道）
+        if ((track_err_channel_mask & (uint8_t)(1U << i)) == 0U) continue;
         // 当前通道ADC采样值
         int32_t adc = (int32_t)gray_sensor.Analog_value[i];
         // 当前通道白参考值（校准时的白值）
@@ -558,8 +564,15 @@ int32_t Track_Calc_Err(void)
     // --- 第三步：直道时低通滤波，抑制高频抖动
     // 非转弯状态下对偏差做一阶低通滤波
     if (is_right_angle == 0) {
-        // 一阶RC低通滤波公式：新输出 = α*新值 + (1-α)*旧输出
-        err_filtered = ERR_FILTER_ALPHA * (float)raw_err + (1.0f - ERR_FILTER_ALPHA) * err_filtered;
+        if (track_err_reseed) {
+            // 掩码刚切换：直接采用新掩码下的原始值作为滤波基线，
+            // 避免用旧掩码基线继续加权造成阶跃
+            err_filtered = (float)raw_err;
+            track_err_reseed = 0U;
+        } else {
+            // 一阶RC低通滤波公式：新输出 = α*新值 + (1-α)*旧输出
+            err_filtered = ERR_FILTER_ALPHA * (float)raw_err + (1.0f - ERR_FILTER_ALPHA) * err_filtered;
+        }
         // 四舍五入转换为整型
         raw_err = (int32_t)(err_filtered + 0.5f);
     }
@@ -569,7 +582,7 @@ int32_t Track_Calc_Err(void)
 }
 
 // 直角检测状态机：检测直角入口并按IMU角度推进转弯过程
-// 流程：特征锁定 → 全白入口 → IMU主体 → 最后10度灰度渐变 → 85度提前退出
+// 流程：特征锁定 → (放弃回空闲 | 全白入口) → IMU全程执行 → 收敛退出并计圈
 void Track_Check_Right_Angle(void)
 {
     // ==============================================
@@ -583,22 +596,29 @@ void Track_Check_Right_Angle(void)
             right_angle_initial_flag = feature;
             right_angle_detect_type = feature;
             right_angle_phase = 1U;
+            // 屏蔽特征侧两通道：type1(右直角)屏蔽通道6/7，type2(左直角)屏蔽通道0/1
+            track_err_channel_mask = (feature == 1U) ? 0x3FU : 0xFCU;
+            track_err_reseed = 1U;
+            // 清零放弃预触发的去抖计数，避免沿用进入前直道巡线积累的命中数
+            RightAngleDetector_ResetAbandon(&right_angle_detector);
         }
     }
 
     // ==============================================
-    // phase 1: 等待全白入口，随后锁定IMU起始角
+    // phase 1: 等待全白入口，随后锁定IMU起始角；
+    //          若中途确认回到"中间黑+边缘白"的正常巡线图案，说明刚才是
+    //          横杆/交叉线等全宽黑特征造成的误触发，放弃预触发回空闲重新检测
     // ==============================================
     else if (is_right_angle == 0 && right_angle_phase == 1U)
     {
-        uint8_t filtered_feature = RightAngleDetector_Feature(right_angle_filtered_bits);
-
         if (right_angle_initial_flag != 0U &&
             RightAngleDetector_AllWhite(right_angle_filtered_bits) &&
             RightAngleDetector_WhiteConfirmed(&right_angle_detector)) {
             is_right_angle = right_angle_initial_flag;
             right_angle_detect_type = right_angle_initial_flag;
             right_angle_phase = 2U;
+            // IMU执行阶段起恢复完整8通道
+            track_err_channel_mask = 0xFFU;
             gyro_corner_start_yaw = gyro_yaw_deg;
             if (is_right_angle == 1U) {
                 gyro_corner_target_yaw = gyro_corner_start_yaw - CORNER_YAW_TARGET;
@@ -606,35 +626,20 @@ void Track_Check_Right_Angle(void)
                 gyro_corner_target_yaw = gyro_corner_start_yaw + CORNER_YAW_TARGET;
             }
             is_in_corner = 1U;
-        } else if (right_angle_initial_flag != 0U &&
-                   filtered_feature == 0U &&
-                   !RightAngleDetector_AllWhite(right_angle_filtered_bits)) {
+        } else if (RightAngleDetector_AbandonConfirmed(&right_angle_detector)) {
             Track_Reset_Right_Angle_State();
         }
     }
 
     // ==============================================
-    // phase 2: IMU二次PID主体，转到75度进入灰度渐变区
+    // phase 2: 直角全程由IMU执行（入口力道平滑爬升，见Track_Corner_Imu_ForceScale），
+    //          剩余偏航误差收敛到CORNER_YAW_EXIT_EPSILON_DEG以内即视为完成
     // ==============================================
     else if (is_right_angle != 0 && right_angle_phase == 2U)
     {
-        float yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg,
-                                                     gyro_corner_start_yaw));
+        float yaw_error = Track_Angle_Delta_Deg(gyro_corner_target_yaw, gyro_yaw_deg);
 
-        if (yaw_diff >= CORNER_GRAY_BLEND_START_DEG) {
-            right_angle_phase = 3U;
-        }
-    }
-
-    // ==============================================
-    // phase 3: 最后10度灰度渐变接管，85度提前退出
-    // ==============================================
-    else if (is_right_angle != 0 && right_angle_phase == 3U)
-    {
-        float yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg,
-                                                     gyro_corner_start_yaw));
-
-        if (yaw_diff < CORNER_IMU_EXIT_DEG) {
+        if (fabsf(yaw_error) > CORNER_YAW_EXIT_EPSILON_DEG) {
             return;
         }
 
@@ -642,12 +647,14 @@ void Track_Check_Right_Angle(void)
         RightAngleDetector_Init(&right_angle_detector);
         right_angle_filtered_bits = 0xFFU;
 
-        Left_Integral     = 0.0f;
-        Right_Integral    = 0.0f;
-        Left_FilteredEnc  = 0.0f;
-        Right_FilteredEnc = 0.0f;
+        // 速度环积分/编码器滤波状态保持连续：出弯时轮子仍在转动，
+        // 清零会让偏差瞬间顶到目标全量脉冲，P项直接冲向PWM限幅造成出弯窜动
+        // 直道误差低通改用当前真实偏差重新播种，避免拖着弯道期间的陈旧值
+        err_filtered = (float)last_valid_err;
 
         is_in_corner = 0U;
+        // 圈数计数放在出弯瞬间：只有真正执行完的弯才计数，
+        // 被上面放弃分支取消的误触发不会污染圈数
         Track_RegisterCornerComplete();
     }
 }
@@ -686,7 +693,7 @@ void Track_PID_Calc(int32_t err)
 }
 
 // 动作执行器：根据当前状态（直道/预触发/转弯中）合成左右轮目标转速
-// 直角主体只用二次函数IMU PID，最后10度灰度渐变接管
+// 直角全程只用IMU二次函数PID，不再有灰度渐变接管
 void Track_Action_Execute(void)
 {
     // --- 局部变量定义与初始化
@@ -710,19 +717,14 @@ void Track_Action_Execute(void)
     }
 
     // ==============================================
-    // 状态分支：转弯中（IMU PID二次包络 + 末段灰度渐变）
+    // 状态分支：转弯中，直角全程由IMU PID执行，不掺入灰度修正
     // ==============================================
-    else if (is_right_angle != 0 &&
-             (right_angle_phase == 2U || right_angle_phase == 3U)) {
-        float yaw_diff = 0.0f;
-        float gray_blend = 0.0f;
+    else if (is_right_angle != 0 && right_angle_phase == 2U) {
+        float yaw_turned = 0.0f;
         float imu_diff_limit = 0.0f;
         is_in_corner = 1U;
 
-        yaw_diff = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg, gyro_corner_start_yaw));
-        if (right_angle_phase == 3U) {
-            gray_blend = Track_Corner_GrayBlend(yaw_diff);
-        }
+        yaw_turned = fabsf(Track_Angle_Delta_Deg(gyro_yaw_deg, gyro_corner_start_yaw));
 
         // 基础转速保持不变，避免明显加速/减速
         target_base = CORNER_TURN_RPM;
@@ -737,25 +739,37 @@ void Track_Action_Execute(void)
         {
             float yaw_error = Track_Angle_Delta_Deg(gyro_corner_target_yaw,
                                                     gyro_yaw_deg);
-            float force_scale = Track_Corner_Imu_ForceScale(yaw_diff);
+            float force_scale = Track_Corner_Imu_ForceScale(yaw_turned);
             gyro_diff = KP_CORNER_YAW * yaw_error
                       - KD_CORNER_YAW * gyro_yaw_rate;
-            gyro_diff *= force_scale * (1.0f - gray_blend);
+            gyro_diff *= force_scale;
         }
 
         gyro_diff = f_clamp(gyro_diff, imu_diff_limit);
-        pid_correction = gray_blend * raw_pid;
+        // 直角执行期间完全不使用灰度PID修正
+        pid_correction = 0.0f;
     }
 
     // ==============================================
     // 状态分支：正常直道巡线
-    // 功能：使用基础转速 + 灰度PID修正
+    // 功能：使用基础转速 + 灰度PID修正；达到目标圈数后基础转速沿斜坡降到0再断电
     // ==============================================
     else {
         // 清除弯道中标志
         is_in_corner = 0;
-        // 使用直道基础转速
-        target_base  = BASE_RPM;
+        if (track_stop_pending) {
+            // 停车减速斜坡：沿固定斜率把基础转速降到0，避免达标瞬间硬急停
+            track_stop_ramp_rpm = CornerProfile_Slew(track_stop_ramp_rpm, 0.0f,
+                                                      TRACK_STOP_RAMP_RPM_PER_MS);
+            target_base = track_stop_ramp_rpm;
+            if (track_stop_ramp_rpm <= 0.5f) {
+                Track_ControlStop();
+                return;
+            }
+        } else {
+            // 使用直道基础转速
+            target_base = BASE_RPM;
+        }
         // 直道无陀螺仪差速修正
         gyro_diff    = 0.0f;
         // 完全使用灰度PID修正

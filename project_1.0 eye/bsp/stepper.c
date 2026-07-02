@@ -1,25 +1,68 @@
 #include "stepper.h"
 #include "board.h"
 
-// 功能: 串口单字节发送, 带超时保护
-static void USART_SendByte(USART_TypeDef *USARTx, uint16_t data) {
-    uint16_t t = 0;
-    // 写入数据寄存器
-    USARTx->DR = (data & 0x01FF);
-    // 等待发送完成, 超时退出
-    while (!(USARTx->SR & USART_FLAG_TXE)) { if (++t > 8000) return; }
+// TX环形缓冲区大小(字节)，取2的幂便于用位运算取模
+#define STEPPER_TX_BUF_SIZE   256U
+
+// 单路UART的非阻塞发送环形缓冲区：head由主循环(生产者)写入，tail由中断(消费者)写入，
+// 单生产者单消费者场景下无需额外加锁
+typedef struct {
+    uint8_t           buf[STEPPER_TX_BUF_SIZE];
+    volatile uint16_t head;
+    volatile uint16_t tail;
+} Stepper_TxRing_t;
+
+// XOY面(USART2)发送环形缓冲区
+static Stepper_TxRing_t s_xoy_tx;
+// YOZ面(USART6)发送环形缓冲区
+static Stepper_TxRing_t s_yoz_tx;
+
+// 计算环形缓冲区当前空闲字节数(依赖无符号回绕，天然处理wrap)
+static uint16_t Stepper_TxFree(const Stepper_TxRing_t *ring)
+{
+    uint16_t used = (uint16_t)(ring->head - ring->tail);
+    return (uint16_t)(STEPPER_TX_BUF_SIZE - used);
 }
 
-// 功能: 串口多字节命令发送
-static void USART_SendCmd(USART_TypeDef *USARTx, uint8_t *cmd, uint8_t len) {
+// 非阻塞入队一条完整命令：空间不足则整条丢弃(不做部分写入，保证协议帧边界完整)
+static void Stepper_TxEnqueue(USART_TypeDef *USARTx, Stepper_TxRing_t *ring,
+                              const uint8_t *cmd, uint8_t len)
+{
     uint8_t i;
-    for (i = 0; i < len; i++) USART_SendByte(USARTx, cmd[i]);
+    if (Stepper_TxFree(ring) < (uint16_t)len) {
+        return;
+    }
+    for (i = 0; i < len; i++) {
+        ring->buf[ring->head & (STEPPER_TX_BUF_SIZE - 1U)] = cmd[i];
+        ring->head++;
+    }
+    // 确保发送寄存器空中断使能，驱动ISR开始搬运数据；缓冲区为空时该中断保持关闭
+    USART_ITConfig(USARTx, USART_IT_TXE, ENABLE);
 }
 
-// XOY面USART2初始化: PD5=TX, PD6=RX, 中断接收
+// TXE中断服务的公共处理：从环形缓冲区取一字节写入DR；缓冲区空则关闭TXE中断
+static void Stepper_TxIrqFeed(USART_TypeDef *USARTx, Stepper_TxRing_t *ring)
+{
+    if (ring->tail == ring->head) {
+        USART_ITConfig(USARTx, USART_IT_TXE, DISABLE);
+        return;
+    }
+    USARTx->DR = ring->buf[ring->tail & (STEPPER_TX_BUF_SIZE - 1U)];
+    ring->tail++;
+}
+
+// 功能: 串口多字节命令非阻塞发送(入队，由TXE中断实际搬运)
+static void USART_SendCmd(USART_TypeDef *USARTx, uint8_t *cmd, uint8_t len) {
+    Stepper_TxRing_t *ring = (USARTx == USART2) ? &s_xoy_tx : &s_yoz_tx;
+    Stepper_TxEnqueue(USARTx, ring, cmd, len);
+}
+
+// XOY面USART2初始化: PD5=TX, PD6=RX, 中断收发(非阻塞TX)
 void StepperXOY_Init(uint32_t baud)
 {
     GPIO_InitTypeDef g; USART_InitTypeDef u; NVIC_InitTypeDef n;
+    // 清空发送环形缓冲区状态
+    s_xoy_tx.head = 0U; s_xoy_tx.tail = 0U;
     // 使能GPIOD和USART2时钟
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_USART2, ENABLE);
@@ -42,6 +85,7 @@ void StepperXOY_Init(uint32_t baud)
     USART_ITConfig(USART2, USART_IT_RXNE, ENABLE);
     // 使能空闲线路检测中断
     USART_ITConfig(USART2, USART_IT_IDLE, ENABLE);
+    // 发送寄存器空中断(TXE)按需动态使能，此处保持关闭
     // 使能USART2
     USART_Cmd(USART2, ENABLE);
     // NVIC配置: USART2_IRQn, 抢占优先级1
@@ -83,10 +127,12 @@ void StepperXOY_SyncStart(uint8_t addr) {
     USART_SendCmd(USART2, c, 4);
 }
 
-// YOZ面USART6初始化: PC6=TX, PC7=RX, 中断接收
+// YOZ面USART6初始化: PC6=TX, PC7=RX, 中断收发(非阻塞TX)
 void StepperYOZ_Init(uint32_t baud)
 {
     GPIO_InitTypeDef g; USART_InitTypeDef u; NVIC_InitTypeDef n;
+    // 清空发送环形缓冲区状态
+    s_yoz_tx.head = 0U; s_yoz_tx.tail = 0U;
     // 使能GPIOC和USART6时钟
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART6, ENABLE);
@@ -109,6 +155,7 @@ void StepperYOZ_Init(uint32_t baud)
     USART_ITConfig(USART6, USART_IT_RXNE, ENABLE);
     // 使能空闲线路检测中断
     USART_ITConfig(USART6, USART_IT_IDLE, ENABLE);
+    // 发送寄存器空中断(TXE)按需动态使能，此处保持关闭
     // 使能USART6
     USART_Cmd(USART6, ENABLE);
     // NVIC配置: USART6_IRQn, 抢占优先级1
@@ -147,7 +194,7 @@ void StepperYOZ_SyncStart(uint8_t addr) {
     USART_SendCmd(USART6, c, 4);
 }
 
-// USART6中断服务(YOZ面): 接收字节+空闲检测
+// USART6中断服务(YOZ面): 接收字节+空闲检测+发送搬运(TXE)
 void USART6_IRQHandler(void) {
     // 接收寄存器非空中断: 读取并丢弃数据(未使用接收数据)
     if (USART_GetITStatus(USART6, USART_IT_RXNE) != RESET) {
@@ -159,9 +206,13 @@ void USART6_IRQHandler(void) {
     if (USART_GetITStatus(USART6, USART_IT_IDLE) != RESET) {
         USART6->SR; USART6->DR;
     }
+    // 发送寄存器空中断: 从环形缓冲区搬运下一字节，非阻塞发送的核心
+    if (USART_GetITStatus(USART6, USART_IT_TXE) != RESET) {
+        Stepper_TxIrqFeed(USART6, &s_yoz_tx);
+    }
 }
 
-// USART2中断服务(XOY面): 接收字节+空闲检测
+// USART2中断服务(XOY面): 接收字节+空闲检测+发送搬运(TXE)
 void USART2_IRQHandler(void) {
     // 接收寄存器非空中断: 读取并丢弃数据(未使用接收数据)
     if (USART_GetITStatus(USART2, USART_IT_RXNE) != RESET) {
@@ -172,5 +223,9 @@ void USART2_IRQHandler(void) {
     // 空闲线路中断: 读SR+DR清除标志
     if (USART_GetITStatus(USART2, USART_IT_IDLE) != RESET) {
         USART2->SR; USART2->DR;
+    }
+    // 发送寄存器空中断: 从环形缓冲区搬运下一字节，非阻塞发送的核心
+    if (USART_GetITStatus(USART2, USART_IT_TXE) != RESET) {
+        Stepper_TxIrqFeed(USART2, &s_xoy_tx);
     }
 }

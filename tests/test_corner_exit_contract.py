@@ -22,10 +22,10 @@ class CornerExitContractTest(unittest.TestCase):
             "KD_GYRO_STRAIGHT",
             "KP_CORNER_YAW",
             "CORNER_MAX_RPM",
-            "CORNER_IMU_MID_DEG",
+            "CORNER_IMU_ENTRY_RAMP_DEG",
             "CORNER_IMU_FORCE_MIN_SCALE",
-            "CORNER_GRAY_BLEND_START_DEG",
-            "CORNER_IMU_EXIT_DEG",
+            "CORNER_YAW_EXIT_EPSILON_DEG",
+            "RIGHT_ANGLE_ABANDON_CONFIRM_SAMPLES",
         ):
             self.assertIn(name, active_macros)
 
@@ -90,12 +90,20 @@ class CornerExitContractTest(unittest.TestCase):
                     offenders.append(str(path))
         self.assertEqual([], offenders)
 
-    def test_pretrigger_waits_for_strict_white_without_timeout_cancel(self):
+    def test_pretrigger_abandons_only_on_sensor_pattern_not_timeout(self):
         track = (ROOT / "project_1.0 car" / "bsp" / "track.c").read_text(
             encoding="utf-8", errors="ignore"
         )
         self.assertIn("RightAngleDetector_AllWhite", track)
         self.assertNotIn("RIGHT_ANGLE_PRE_TIMEOUT_MS", track)
+        self.assertNotIn("_TIMEOUT_MS", track)
+        phase1_start = track.index("else if (is_right_angle == 0 && right_angle_phase == 1U)")
+        phase2_start = track.index("else if (is_right_angle != 0 && right_angle_phase == 2U)")
+        phase1 = track[phase1_start:phase2_start]
+        # 预触发可以放弃，但只能挂在传感器图案判据(AbandonConfirmed)之后，不能是超时
+        abandon_idx = phase1.index("RightAngleDetector_AbandonConfirmed(&right_angle_detector)")
+        reset_idx = phase1.index("Track_Reset_Right_Angle_State();")
+        self.assertGreater(reset_idx, abandon_idx)
 
     def test_armed_gyro_never_switches_to_fallback_action(self):
         track = (ROOT / "project_1.0 car" / "bsp" / "track.c").read_text(
@@ -112,7 +120,7 @@ class CornerExitContractTest(unittest.TestCase):
         self.assertIn("gyro_corner_target_yaw = gyro_corner_start_yaw - CORNER_YAW_TARGET;", track)
         self.assertIn("gyro_corner_target_yaw = gyro_corner_start_yaw + CORNER_YAW_TARGET;", track)
 
-    def test_corner_exit_is_imu_angle_based_with_last_10deg_gray_handover(self):
+    def test_corner_is_pure_imu_execution_with_no_gray_handover(self):
         track = (ROOT / "project_1.0 car" / "bsp" / "track.c").read_text(
             encoding="utf-8", errors="ignore"
         )
@@ -121,41 +129,46 @@ class CornerExitContractTest(unittest.TestCase):
         )
         check_start = track.index("void Track_Check_Right_Angle(void)")
         action_start = track.index("void Track_Action_Execute(void)")
+        check_phase1_start = track.index(
+            "else if (is_right_angle == 0 && right_angle_phase == 1U)",
+            check_start,
+        )
         check_phase2_start = track.index(
             "else if (is_right_angle != 0 && right_angle_phase == 2U)",
             check_start,
         )
-        check_phase3_start = track.index(
-            "else if (is_right_angle != 0 && right_angle_phase == 3U)",
-            check_start,
-        )
-        check_phase3_end = track.index("void Track_PID_Calc", check_phase3_start)
-        check_phase2 = track[check_phase2_start:check_phase3_start]
-        check_phase3 = track[check_phase3_start:check_phase3_end]
-        gray_helper = track[track.index("static float Track_Corner_GrayBlend"):
-                            track.index("// 向K230视觉模块发送", track.index("static float Track_Corner_GrayBlend"))]
+        check_phase2_end = track.index("void Track_PID_Calc", check_phase2_start)
+        check_phase1 = track[check_phase1_start:check_phase2_start]
+        check_phase2 = track[check_phase2_start:check_phase2_end]
         action_corner_start = track.index(
-            "(right_angle_phase == 2U || right_angle_phase == 3U)",
+            "is_right_angle != 0 && right_angle_phase == 2U) {",
             action_start,
         )
         action_corner_end = track.index("else {", action_corner_start)
         action_corner = track[action_corner_start:action_corner_end]
-        self.assertNotIn("gray_corner_diff_smooth", check_phase3 + action_corner)
-        self.assertNotIn("RightAngleDetector_AllWhite", check_phase3)
-        self.assertNotIn("right_angle_exit_gray_hits", check_phase3 + action_corner)
-        self.assertIn("#define CORNER_GRAY_BLEND_START_DEG   75.0f", config)
-        self.assertIn("#define CORNER_IMU_EXIT_DEG           85.0f", config)
-        self.assertIn("if (yaw_diff >= CORNER_GRAY_BLEND_START_DEG)", check_phase2)
-        self.assertIn("CORNER_IMU_EXIT_DEG", check_phase3)
-        self.assertIn("CORNER_GRAY_BLEND_START_DEG", gray_helper)
-        self.assertIn("Track_Corner_Imu_ForceScale(yaw_diff)", action_corner)
-        self.assertIn("Track_Corner_GrayBlend(yaw_diff)", action_corner)
-        self.assertIn("gyro_diff *= force_scale * (1.0f - gray_blend);", action_corner)
-        self.assertIn("pid_correction = gray_blend * raw_pid;", action_corner)
+        # 灰度渐变接管已完全移除：不存在phase3、不存在GrayBlend辅助函数，
+        # 直角执行阶段(check_phase2/action_corner)不出现任何灰度相关判据
+        self.assertNotIn("right_angle_phase == 3U", track)
+        self.assertNotIn("Track_Corner_GrayBlend", track)
+        self.assertNotIn("gray_blend", check_phase2 + action_corner)
+        self.assertNotIn("CORNER_GRAY_BLEND_START_DEG", config + track)
+        self.assertNotIn("RightAngleDetector_AllWhite", check_phase2)
+        self.assertNotIn("Grayscale_GetDigital", check_phase2)
+        # 出弯判据是IMU剩余偏航误差收敛，不是灰度状态
+        self.assertIn("#define CORNER_YAW_EXIT_EPSILON_DEG   3.0f", config)
+        self.assertIn(
+            "if (fabsf(yaw_error) > CORNER_YAW_EXIT_EPSILON_DEG) {", check_phase2
+        )
+        # 入口力道爬升包络仍然生效，直角期间不掺入灰度PID修正
+        self.assertIn("Track_Corner_Imu_ForceScale(yaw_turned)", action_corner)
         self.assertIn("gyro_diff = f_clamp(gyro_diff, imu_diff_limit);", action_corner)
+        self.assertIn("pid_correction = 0.0f;", action_corner)
         self.assertNotIn("CORNER_GYRO_DIFF_LIMIT_RPM", config + track)
         self.assertNotIn("pid_smooth", config + track)
-        self.assertIn("Track_RegisterCornerComplete();", check_phase3)
+        # 圈数计数移到出弯瞬间：预触发阶段不计数，避免被放弃分支取消的
+        # 误触发污染圈数；只有真正收敛完成的弯才计数
+        self.assertNotIn("Track_RegisterCornerComplete();", check_phase1)
+        self.assertIn("Track_RegisterCornerComplete();", check_phase2)
 
     def test_eye_uses_k230_reported_error_directly(self):
         eye_main = (ROOT / "project_1.0 eye" / "app" / "main.c").read_text(
@@ -187,8 +200,10 @@ class CornerExitContractTest(unittest.TestCase):
         self.assertIn("packet_stale", process)
         self.assertIn("Vision_TargetProcess(0, 0, false);", process)
         self.assertIn("Vision_LaserTrigger(false);", process)
-        self.assertIn("Tracking_Update(0U);", process)
         self.assertIn("Vision_GimbalPID_ClearIntegral();", process)
+        self.assertNotIn("Tracking_Update", process)
+        self.assertNotIn("VisionStrategy", process)
+        self.assertNotIn("roi_state", process)
 
     def test_eye_imu_compensation_only_during_corner_execution(self):
         uart5 = (ROOT / "project_1.0 eye" / "bsp" / "uart" / "uart5.c").read_text(
